@@ -1,0 +1,818 @@
+-- glupost hub v7.0 (исправлены continue, утечки, приоритет, части персонажа)
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+if not Drawing then error("Drawing API not supported") end
+
+-- ===== НАСТРОЙКИ =====
+local ESP = {
+    Enabled = true,
+    BoxType = "2D", BoxColor = Color3.fromRGB(0,255,0), BoxThickness = 2,
+    Skeleton = false, SkeletonColor = Color3.fromRGB(255,0,0), SkeletonThickness = 2,
+    HideTeammates = false,
+    MaxDistance = 500,
+    ShowHealth = true, ShowName = true, ShowTracer = false, ShowDistance = true,
+    TracerColor = Color3.fromRGB(255,255,255), TracerThickness = 1,
+    OffscreenArrows = true, ArrowColor = Color3.fromRGB(255,255,0), ArrowSize = 20,
+    VisibleCheck = true, VisibleColor = Color3.fromRGB(0,255,0), OccludedColor = Color3.fromRGB(255,200,0),
+    Chams = false, ChamsVisibleColor = Color3.fromRGB(0,255,0), ChamsOccludedColor = Color3.fromRGB(255,0,0), ChamsTransparency = 0.5,
+    PriorityTarget = true, PriorityColor = Color3.fromRGB(255,215,0),
+}
+
+-- ===== ГЛОБАЛЬНЫЕ ДАННЫЕ =====
+local playersData = {}
+local connections = {}
+local renderData = {}          -- хранит только { player, hrpPos, onScreen, distance, visible, priority }
+local drawingPool = { lines = {}, corners = {}, texts = {}, tracers = {}, skeleton = {}, arrows = {} }
+local renderSteppedConn, heartbeatConn, playerAddedConn, playerRemovingConn = nil, nil, nil, nil
+local isUnloaded = false
+local lastHeartbeat = 0
+local heartbeatInterval = 1/20   -- 20 раз в секунду
+
+-- Один общий RaycastParams
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+
+-- ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+local function safeDestroy(obj)
+    if not obj then return end
+    pcall(function()
+        if typeof(obj) == "Instance" then
+            obj:Destroy()
+        else
+            obj.Visible = false
+        end
+    end)
+end
+
+local function getFromPool(pool, type)
+    for i, obj in ipairs(pool) do
+        local ok, visible = pcall(function() return obj.Visible end)
+        if ok and visible == false then
+            return obj
+        end
+    end
+    local new = Drawing.new(type)
+    table.insert(pool, new)
+    return new
+end
+
+local function hideAll(plrData)
+    if plrData.drawings then
+        for _, group in pairs(plrData.drawings) do
+            if type(group) == "table" then
+                for _, obj in pairs(group) do obj.Visible = false end
+            elseif group then group.Visible = false end
+        end
+    end
+    if plrData.skeletonLines then
+        for _, l in pairs(plrData.skeletonLines) do l.Visible = false end
+    end
+    if plrData.texts then
+        for _, t in pairs(plrData.texts) do t.Visible = false end
+    end
+    if plrData.tracer then plrData.tracer.Visible = false end
+    if plrData.adornment then plrData.adornment.Visible = false end
+    if plrData.arrow then
+        for _, a in pairs(plrData.arrow) do a.Visible = false end
+    end
+    if plrData.highlight then plrData.highlight.Enabled = false end
+end
+
+local function destroyAll(plrData)
+    if plrData.drawings then
+        for _, group in pairs(plrData.drawings) do
+            if type(group) == "table" then
+                for _, obj in pairs(group) do safeDestroy(obj) end
+            else safeDestroy(group) end
+        end
+        plrData.drawings = nil
+    end
+    if plrData.skeletonLines then
+        for _, l in pairs(plrData.skeletonLines) do safeDestroy(l) end
+        plrData.skeletonLines = nil
+    end
+    if plrData.texts then
+        for _, t in pairs(plrData.texts) do safeDestroy(t) end
+        plrData.texts = nil
+    end
+    if plrData.tracer then safeDestroy(plrData.tracer); plrData.tracer = nil end
+    if plrData.adornment then safeDestroy(plrData.adornment); plrData.adornment = nil end
+    if plrData.arrow then
+        for _, a in pairs(plrData.arrow) do safeDestroy(a) end
+        plrData.arrow = nil
+    end
+    if plrData.highlight then safeDestroy(plrData.highlight); plrData.highlight = nil end
+end
+
+local function cachePlayerParts(plr, char)
+    if not char then return end
+    local parts = {
+        _player = plr,
+        Character = char,
+        Head = char:FindFirstChild("Head"),
+        Torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"),
+        HumanoidRootPart = char:FindFirstChild("HumanoidRootPart"),
+        LeftArm = char:FindFirstChild("LeftArm") or char:FindFirstChild("LeftUpperArm"),
+        RightArm = char:FindFirstChild("RightArm") or char:FindFirstChild("RightUpperArm"),
+        LeftLeg = char:FindFirstChild("LeftLeg") or char:FindFirstChild("LeftUpperLeg"),
+        RightLeg = char:FindFirstChild("RightLeg") or char:FindFirstChild("RightUpperLeg"),
+        LeftLowerArm = char:FindFirstChild("LeftLowerArm"),
+        RightLowerArm = char:FindFirstChild("RightLowerArm"),
+        LeftHand = char:FindFirstChild("LeftHand"),
+        RightHand = char:FindFirstChild("RightHand"),
+        LeftLowerLeg = char:FindFirstChild("LeftLowerLeg"),
+        RightLowerLeg = char:FindFirstChild("RightLowerLeg"),
+        LeftFoot = char:FindFirstChild("LeftFoot"),
+        RightFoot = char:FindFirstChild("RightFoot"),
+    }
+    if playersData[plr] then
+        playersData[plr].parts = parts
+    end
+end
+
+local function setupPlayer(plr)
+    if plr == LP then return end
+    if playersData[plr] then
+        destroyAll(playersData[plr])
+        if connections[plr] and connections[plr].CharacterAdded then connections[plr].CharacterAdded:Disconnect() end
+        if connections[plr] and connections[plr].CharacterRemoving then connections[plr].CharacterRemoving:Disconnect() end
+    end
+    playersData[plr] = {
+        parts = {},
+        drawings = nil, skeletonLines = nil, texts = nil, tracer = nil, adornment = nil, arrow = nil, highlight = nil,
+        visible = false, lastVisibleUpdate = 0,
+    }
+    renderData[plr] = nil
+
+    local charAddedConn = plr.CharacterAdded:Connect(function(char)
+        task.spawn(function()
+            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+            local head = char:WaitForChild("Head", 5)
+            if hrp and head then
+                cachePlayerParts(plr, char)
+                if ESP.Chams and char then
+                    local data = playersData[plr]
+                    if data then
+                        if data.highlight then
+                            data.highlight:Destroy()
+                            data.highlight = nil
+                        end
+                        local hl = Instance.new("Highlight")
+                        hl.Parent = char
+                        hl.FillColor = ESP.ChamsVisibleColor
+                        hl.FillTransparency = ESP.ChamsTransparency
+                        hl.OutlineTransparency = 1
+                        hl.Enabled = true
+                        data.highlight = hl
+                    end
+                end
+            end
+        end)
+    end)
+    local charRemovingConn = plr.CharacterRemoving:Connect(function()
+        if playersData[plr] then
+            if playersData[plr].highlight then
+                playersData[plr].highlight:Destroy()
+                playersData[plr].highlight = nil
+            end
+            hideAll(playersData[plr])
+        end
+        renderData[plr] = nil
+    end)
+
+    if not connections[plr] then connections[plr] = {} end
+    connections[plr].CharacterAdded = charAddedConn
+    connections[plr].CharacterRemoving = charRemovingConn
+
+    if plr.Character then
+        task.spawn(function()
+            local char = plr.Character
+            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+            local head = char:WaitForChild("Head", 5)
+            if hrp and head then
+                cachePlayerParts(plr, char)
+                if ESP.Chams and char then
+                    local data = playersData[plr]
+                    if data then
+                        if data.highlight then
+                            data.highlight:Destroy()
+                        end
+                        local hl = Instance.new("Highlight")
+                        hl.Parent = char
+                        hl.FillColor = ESP.ChamsVisibleColor
+                        hl.FillTransparency = ESP.ChamsTransparency
+                        hl.OutlineTransparency = 1
+                        hl.Enabled = true
+                        data.highlight = hl
+                    end
+                end
+            end
+        end)
+    end
+end
+
+local function isTeammate(plr)
+    if not ESP.HideTeammates then return false end
+    return LP.Team and plr.Team and LP.Team == plr.Team
+end
+
+-- Видимость с кэшем
+local function isVisibleCached(data, part)
+    local now = os.clock()
+    if now - data.lastVisibleUpdate < 0.2 then return data.visible end
+    data.lastVisibleUpdate = now
+    if not part then data.visible = false return false end
+    local origin = Camera.CFrame.Position
+    local delta = part.Position - origin
+    local magnitude = delta.Magnitude
+    if magnitude < 0.001 then
+        data.visible = true
+        return true
+    end
+    local direction = delta / magnitude
+    rayParams.FilterDescendantsInstances = {LP.Character, workspace.CurrentCamera}
+    local result = workspace:Raycast(origin, direction * magnitude, rayParams)
+    if not result then data.visible = true return true end
+    local distToHit = (result.Position - origin).Magnitude
+    data.visible = distToHit >= magnitude - 0.5
+    return data.visible
+end
+
+-- ===== ЛОГИКА (Heartbeat) =====
+local function updateLogic()
+    if not ESP.Enabled then
+        for _, data in pairs(playersData) do hideAll(data) end
+        return
+    end
+
+    local maxDist = ESP.MaxDistance
+    local priorityScore = -math.huge
+    local priorityPlr = nil
+
+    for plr, data in pairs(playersData) do
+        local parts = data.parts
+        if not parts or not parts.HumanoidRootPart or not parts.Head then
+            renderData[plr] = nil
+            goto continue
+        end
+        if isTeammate(plr) then
+            hideAll(data)
+            renderData[plr] = nil
+            goto continue
+        end
+
+        local hrp = parts.HumanoidRootPart
+        local distance = (Camera.CFrame.Position - hrp.Position).Magnitude
+        if distance > maxDist then
+            hideAll(data)
+            renderData[plr] = nil
+            goto continue
+        end
+
+        local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then
+            hideAll(data)
+            renderData[plr] = nil
+            goto continue
+        end
+
+        if parts.Character ~= plr.Character then
+            cachePlayerParts(plr, plr.Character)
+            parts = playersData[plr].parts
+            if not parts or not parts.HumanoidRootPart or not parts.Head then
+                hideAll(data)
+                renderData[plr] = nil
+                goto continue
+            end
+        end
+
+        local hrpPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+        local visible = false
+        if ESP.VisibleCheck then
+            visible = isVisibleCached(data, parts.Head)
+        end
+
+        renderData[plr] = {
+            player = plr,
+            hrpPos = hrpPos,
+            onScreen = onScreen,
+            distance = distance,
+            visible = visible,
+            priority = false,
+        }
+
+        if ESP.PriorityTarget and onScreen then
+            local score = (visible and 1000 or 0) - distance
+            if score > priorityScore then
+                priorityScore = score
+                priorityPlr = plr
+            end
+        end
+        ::continue::
+    end
+
+    if ESP.PriorityTarget and priorityPlr and renderData[priorityPlr] then
+        renderData[priorityPlr].priority = true
+    end
+end
+
+-- ===== ОТРИСОВКА (RenderStepped) =====
+local function drawArrow(plrData, arrowData)
+    if not ESP.OffscreenArrows then
+        if plrData.arrow then
+            for _, a in pairs(plrData.arrow) do a.Visible = false end
+        end
+        return
+    end
+    if arrowData.onScreen then
+        if plrData.arrow then
+            for _, a in pairs(plrData.arrow) do a.Visible = false end
+        end
+        return
+    end
+    local screenPos = arrowData.hrpPos
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local vec = Vector2.new(screenPos.X, screenPos.Y) - center
+    if vec.Magnitude < 0.001 then return end
+    local dir = vec.Unit
+    local radius = math.min(Camera.ViewportSize.X, Camera.ViewportSize.Y) * 0.4
+    local arrowPos = center + dir * radius
+    arrowPos = Vector2.new(
+        math.clamp(arrowPos.X, ESP.ArrowSize, Camera.ViewportSize.X - ESP.ArrowSize),
+        math.clamp(arrowPos.Y, ESP.ArrowSize, Camera.ViewportSize.Y - ESP.ArrowSize)
+    )
+    if not plrData.arrow then
+        plrData.arrow = { getFromPool(drawingPool.arrows, "Line"), getFromPool(drawingPool.arrows, "Line"), getFromPool(drawingPool.arrows, "Line") }
+        for _, a in pairs(plrData.arrow) do a.Thickness = 2 end
+    end
+    local len = ESP.ArrowSize
+    local tip = arrowPos + dir * len
+    local perp = Vector2.new(-dir.Y, dir.X) * (len * 0.4)
+    local isPriority = arrowData.priority
+    local color = isPriority and ESP.PriorityColor or ESP.ArrowColor
+    plrData.arrow[1].From = tip
+    plrData.arrow[1].To = arrowPos - dir * len
+    plrData.arrow[2].From = tip
+    plrData.arrow[2].To = arrowPos + perp - dir * (len * 0.5)
+    plrData.arrow[3].From = tip
+    plrData.arrow[3].To = arrowPos - perp - dir * (len * 0.5)
+    for _, a in pairs(plrData.arrow) do
+        a.Color = color
+        a.Visible = true
+    end
+end
+
+local function drawBox(plrData, parts, arrowData)
+    if not ESP.Enabled or arrowData.distance > ESP.MaxDistance or not arrowData.onScreen then
+        if plrData.drawings then
+            for _, group in pairs(plrData.drawings) do
+                if type(group) == "table" then
+                    for _, obj in pairs(group) do obj.Visible = false end
+                end
+            end
+        end
+        return
+    end
+
+    local head = parts.Head
+    local hrp = parts.HumanoidRootPart
+    if not head or not hrp then return end
+
+    local headPos = Camera:WorldToViewportPoint(head.Position)
+    local footPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+    local height = math.abs(headPos.Y - footPos.Y)
+    if height < 2 then
+        hideAll(plrData)
+        return
+    end
+    local width = height * 0.8
+    local topLeft = Vector2.new(arrowData.hrpPos.X - width/2, headPos.Y)
+    local bottomRight = Vector2.new(arrowData.hrpPos.X + width/2, footPos.Y)
+
+    local boxType = ESP.BoxType
+    local boxColor = ESP.VisibleCheck and (arrowData.visible and ESP.VisibleColor or ESP.OccludedColor) or ESP.BoxColor
+    if arrowData.priority then boxColor = ESP.PriorityColor end
+
+    if boxType == "2D" then
+        if not plrData.drawings then plrData.drawings = {} end
+        if not plrData.drawings.lines then
+            local lines = {}
+            for i = 1, 4 do lines[i] = getFromPool(drawingPool.lines, "Line") end
+            plrData.drawings.lines = lines
+        end
+        local lines = plrData.drawings.lines
+        local points = {
+            {topLeft, Vector2.new(bottomRight.X, topLeft.Y)},
+            {Vector2.new(bottomRight.X, topLeft.Y), bottomRight},
+            {bottomRight, Vector2.new(topLeft.X, bottomRight.Y)},
+            {Vector2.new(topLeft.X, bottomRight.Y), topLeft}
+        }
+        for i = 1, 4 do
+            lines[i].From = points[i][1]
+            lines[i].To = points[i][2]
+            lines[i].Color = boxColor
+            lines[i].Thickness = (arrowData.priority and ESP.BoxThickness+2 or ESP.BoxThickness)
+            lines[i].Visible = true
+        end
+    elseif boxType == "Corner" then
+        if not plrData.drawings then plrData.drawings = {} end
+        if not plrData.drawings.corners then
+            local corners = {}
+            for i = 1, 8 do corners[i] = getFromPool(drawingPool.corners, "Line") end
+            plrData.drawings.corners = corners
+        end
+        local corners = plrData.drawings.corners
+        local len = 12
+        corners[1].From = topLeft; corners[1].To = Vector2.new(topLeft.X + len, topLeft.Y)
+        corners[2].From = topLeft; corners[2].To = Vector2.new(topLeft.X, topLeft.Y + len)
+        corners[3].From = Vector2.new(bottomRight.X, topLeft.Y); corners[3].To = Vector2.new(bottomRight.X - len, topLeft.Y)
+        corners[4].From = Vector2.new(bottomRight.X, topLeft.Y); corners[4].To = Vector2.new(bottomRight.X, topLeft.Y + len)
+        corners[5].From = Vector2.new(topLeft.X, bottomRight.Y); corners[5].To = Vector2.new(topLeft.X + len, bottomRight.Y)
+        corners[6].From = Vector2.new(topLeft.X, bottomRight.Y); corners[6].To = Vector2.new(topLeft.X, bottomRight.Y - len)
+        corners[7].From = bottomRight; corners[7].To = Vector2.new(bottomRight.X - len, bottomRight.Y)
+        corners[8].From = bottomRight; corners[8].To = Vector2.new(bottomRight.X, bottomRight.Y - len)
+        for i = 1, 8 do
+            corners[i].Color = boxColor
+            corners[i].Thickness = (arrowData.priority and ESP.BoxThickness+2 or ESP.BoxThickness)
+            corners[i].Visible = true
+        end
+    end
+end
+
+local function draw3DBox(plrData, parts, arrowData)
+    if not ESP.Enabled or isTeammate(parts._player) or ESP.Chams then
+        if plrData.adornment then plrData.adornment.Visible = false end
+        return
+    end
+    if arrowData.distance > ESP.MaxDistance or not arrowData.onScreen then
+        if plrData.adornment then plrData.adornment.Visible = false end
+        return
+    end
+    local hrp = parts.HumanoidRootPart
+    if not hrp then return end
+    if not plrData.adornment or not plrData.adornment.Parent then
+        if plrData.adornment then plrData.adornment:Destroy() end
+        plrData.adornment = Instance.new("BoxHandleAdornment")
+        plrData.adornment.AlwaysOnTop = true
+        plrData.adornment.Transparency = 0.5
+        plrData.adornment.ZIndex = 0
+        plrData.adornment.Parent = hrp
+    end
+    plrData.adornment.Adornee = hrp
+    plrData.adornment.Size = hrp.Size + Vector3.new(2, 3, 2)
+    plrData.adornment.Color = (arrowData.priority and ESP.PriorityColor or ESP.BoxColor)
+    plrData.adornment.Visible = true
+end
+
+local function drawSkeleton(plrData, parts, arrowData)
+    local plr = parts._player
+    -- Динамическое обновление частей для R15
+    if plr and plr.Character and (
+        not parts.LeftLowerArm or not parts.RightLowerArm or
+        not parts.LeftLowerLeg or not parts.RightLowerLeg
+    ) then
+        cachePlayerParts(plr, plr.Character)
+        parts = playersData[plr].parts
+        if not parts then return end
+    end
+
+    if not ESP.Skeleton or not ESP.Enabled or isTeammate(parts._player) then
+        if plrData.skeletonLines then
+            for _, l in pairs(plrData.skeletonLines) do l.Visible = false end
+        end
+        return
+    end
+    if arrowData.distance > ESP.MaxDistance or not arrowData.onScreen then
+        if plrData.skeletonLines then
+            for _, l in pairs(plrData.skeletonLines) do l.Visible = false end
+        end
+        return
+    end
+    local function getPos(part)
+        if part then
+            local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+            if onScreen then return pos end
+        end
+        return nil
+    end
+    local connectionsMap = {
+        {parts.Head, parts.Torso}, {parts.Torso, parts.HumanoidRootPart},
+        {parts.Torso, parts.LeftArm}, {parts.Torso, parts.RightArm},
+        {parts.LeftArm, parts.LeftLowerArm}, {parts.RightArm, parts.RightLowerArm},
+        {parts.LeftLowerArm, parts.LeftHand}, {parts.RightLowerArm, parts.RightHand},
+        {parts.Torso, parts.LeftLeg}, {parts.Torso, parts.RightLeg},
+        {parts.LeftLeg, parts.LeftLowerLeg}, {parts.RightLeg, parts.RightLowerLeg},
+        {parts.LeftLowerLeg, parts.LeftFoot}, {parts.RightLowerLeg, parts.RightFoot},
+    }
+    if not plrData.skeletonLines then
+        plrData.skeletonLines = {}
+        for i = 1, #connectionsMap do plrData.skeletonLines[i] = getFromPool(drawingPool.skeleton, "Line") end
+    end
+    local idx = 1
+    local color = arrowData.priority and ESP.PriorityColor or ESP.SkeletonColor
+    for _, conn in ipairs(connectionsMap) do
+        local a = getPos(conn[1])
+        local b = getPos(conn[2])
+        if a and b then
+            plrData.skeletonLines[idx].From = Vector2.new(a.X, a.Y)
+            plrData.skeletonLines[idx].To = Vector2.new(b.X, b.Y)
+            plrData.skeletonLines[idx].Color = color
+            plrData.skeletonLines[idx].Thickness = ESP.SkeletonThickness
+            plrData.skeletonLines[idx].Visible = true
+        else
+            plrData.skeletonLines[idx].Visible = false
+        end
+        idx = idx + 1
+    end
+    for i = idx, #plrData.skeletonLines do plrData.skeletonLines[i].Visible = false end
+end
+
+local function drawTexts(plrData, parts, arrowData)
+    if not ESP.Enabled or isTeammate(parts._player) or arrowData.distance > ESP.MaxDistance or not arrowData.onScreen then
+        if plrData.texts then
+            for _, t in pairs(plrData.texts) do t.Visible = false end
+        end
+        return
+    end
+    local char = parts._player.Character
+    if not char then
+        if plrData.texts then
+            for _, t in pairs(plrData.texts) do t.Visible = false end
+        end
+        return
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then
+        if plrData.texts then
+            for _, t in pairs(plrData.texts) do t.Visible = false end
+        end
+        return
+    end
+    if not plrData.texts then plrData.texts = {} end
+    local texts = plrData.texts
+    local yOffset = 0
+    if ESP.ShowName then
+        if not texts.NameText then
+            texts.NameText = getFromPool(drawingPool.texts, "Text")
+            texts.NameText.Center = true
+            texts.NameText.Outline = true
+            texts.NameText.Font = 2
+            texts.NameText.Size = 14
+        end
+        texts.NameText.Position = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y - 55 - yOffset)
+        texts.NameText.Text = parts._player.DisplayName
+        texts.NameText.Color = arrowData.priority and ESP.PriorityColor or ESP.BoxColor
+        texts.NameText.Visible = true
+        yOffset = yOffset + 16
+    elseif texts.NameText then
+        texts.NameText.Visible = false
+    end
+
+    if ESP.ShowHealth then
+        if not texts.HealthText then
+            texts.HealthText = getFromPool(drawingPool.texts, "Text")
+            texts.HealthText.Center = true
+            texts.HealthText.Outline = true
+            texts.HealthText.Font = 2
+            texts.HealthText.Size = 12
+        end
+        texts.HealthText.Position = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y - 40 - yOffset)
+        texts.HealthText.Text = "❤️ " .. math.floor(hum.Health)
+        texts.HealthText.Color = Color3.fromRGB(255,100,100)
+        texts.HealthText.Visible = true
+        yOffset = yOffset + 16
+    elseif texts.HealthText then
+        texts.HealthText.Visible = false
+    end
+
+    if ESP.ShowDistance then
+        if not texts.DistText then
+            texts.DistText = getFromPool(drawingPool.texts, "Text")
+            texts.DistText.Center = true
+            texts.DistText.Outline = true
+            texts.DistText.Font = 2
+            texts.DistText.Size = 12
+        end
+        texts.DistText.Position = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y - 25 - yOffset)
+        texts.DistText.Text = math.floor(arrowData.distance) .. " studs"
+        texts.DistText.Color = Color3.fromRGB(200,200,200)
+        texts.DistText.Visible = true
+    elseif texts.DistText then
+        texts.DistText.Visible = false
+    end
+end
+
+local function drawTracer(plrData, parts, arrowData)
+    if not ESP.ShowTracer or not ESP.Enabled or isTeammate(parts._player) or arrowData.distance > ESP.MaxDistance or not arrowData.onScreen then
+        if plrData.tracer then plrData.tracer.Visible = false end
+        return
+    end
+    if not plrData.tracer then
+        plrData.tracer = getFromPool(drawingPool.tracers, "Line")
+        plrData.tracer.Thickness = ESP.TracerThickness
+    end
+    local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+    local footPos = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y + 30)
+    plrData.tracer.From = screenCenter
+    plrData.tracer.To = footPos
+    plrData.tracer.Color = arrowData.priority and ESP.PriorityColor or ESP.TracerColor
+    plrData.tracer.Visible = true
+end
+
+local function drawChams(plrData, visible, priority)
+    if not ESP.Chams then
+        if plrData.highlight then plrData.highlight.Enabled = false end
+        return
+    end
+    if not plrData.highlight or not plrData.highlight.Parent then return end
+    plrData.highlight.FillColor = priority and ESP.PriorityColor or (visible and ESP.ChamsVisibleColor or ESP.ChamsOccludedColor)
+    plrData.highlight.FillTransparency = ESP.ChamsTransparency
+    plrData.highlight.Enabled = true
+end
+
+local function drawAll()
+    for plr, data in pairs(playersData) do
+        local rd = renderData[plr]
+        if not rd then
+            hideAll(data)
+            goto continue
+        end
+        local parts = playersData[plr] and playersData[plr].parts
+        if not parts then
+            hideAll(data)
+            goto continue
+        end
+
+        local boxType = ESP.BoxType
+        if boxType == "3D" then
+            draw3DBox(data, parts, rd)
+            if data.drawings then
+                for _, group in pairs(data.drawings) do
+                    if type(group) == "table" then
+                        for _, obj in pairs(group) do obj.Visible = false end
+                    end
+                end
+            end
+        else
+            if data.adornment then data.adornment.Visible = false end
+            drawBox(data, parts, rd)
+        end
+        drawSkeleton(data, parts, rd)
+        drawTexts(data, parts, rd)
+        drawTracer(data, parts, rd)
+        drawArrow(data, rd)
+        drawChams(data, rd.visible, rd.priority)
+        ::continue::
+    end
+end
+
+-- === ЦИКЛЫ ===
+local function onHeartbeat()
+    if isUnloaded then return end
+    local now = os.clock()
+    if now - lastHeartbeat >= heartbeatInterval then
+        lastHeartbeat = now
+        updateLogic()
+    end
+end
+
+local function onRender(dt)
+    if isUnloaded then return end
+    drawAll()
+end
+
+-- === ПОЛНЫЙ UNLOAD ===
+local function fullUnload()
+    isUnloaded = true
+    if heartbeatConn then heartbeatConn:Disconnect(); heartbeatConn = nil end
+    if renderSteppedConn then renderSteppedConn:Disconnect(); renderSteppedConn = nil end
+    if playerAddedConn then playerAddedConn:Disconnect(); playerAddedConn = nil end
+    if playerRemovingConn then playerRemovingConn:Disconnect(); playerRemovingConn = nil end
+    for _, data in pairs(playersData) do destroyAll(data) end
+    for plr, conns in pairs(connections) do
+        if conns.CharacterAdded then conns.CharacterAdded:Disconnect() end
+        if conns.CharacterRemoving then conns.CharacterRemoving:Disconnect() end
+    end
+    playersData = {}
+    connections = {}
+    for _, pool in pairs(drawingPool) do
+        for _, obj in ipairs(pool) do safeDestroy(obj) end
+    end
+    drawingPool = { lines = {}, corners = {}, texts = {}, tracers = {}, skeleton = {}, arrows = {} }
+    renderData = {}
+    Library:Unload()
+end
+
+-- === ПОДКЛЮЧЕНИЕ ===
+playerAddedConn = Players.PlayerAdded:Connect(setupPlayer)
+playerRemovingConn = Players.PlayerRemoving:Connect(function(plr)
+    if playersData[plr] then
+        destroyAll(playersData[plr])
+        playersData[plr] = nil
+    end
+    if connections[plr] then
+        if connections[plr].CharacterAdded then connections[plr].CharacterAdded:Disconnect() end
+        if connections[plr].CharacterRemoving then connections[plr].CharacterRemoving:Disconnect() end
+    end
+    connections[plr] = nil
+    renderData[plr] = nil
+end)
+
+for _, plr in ipairs(Players:GetPlayers()) do setupPlayer(plr) end
+heartbeatConn = RunService.Heartbeat:Connect(onHeartbeat)
+renderSteppedConn = RunService.RenderStepped:Connect(onRender)
+
+-- === GUI ===
+local Window = Library:CreateWindow({
+    Title = "glupost hub",
+    Footer = "v7.0 stable",
+    NotifySide = "Right",
+    ShowCustomCursor = true,
+})
+
+local Tabs = {
+    Main = Window:AddTab("Main", "user"),
+    Visuals = Window:AddTab("Visuals", "palette"),
+    ["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+}
+local Options = Library.Options
+
+local mainLeft = Tabs.Main:AddLeftGroupbox("General")
+mainLeft:AddToggle("ESPEnabled", { Text = "Enable ESP", Default = true, Callback = function(v) ESP.Enabled = v end })
+mainLeft:AddDropdown("BoxType", { Text = "Box Type", Values = {"2D","3D","Corner"}, Default = "2D", Callback = function(v) ESP.BoxType = v end })
+mainLeft:AddSlider("MaxDistance", { Text = "Max Distance", Default = 500, Min = 50, Max = 2000, Rounding = 0, Callback = function(v) ESP.MaxDistance = v end })
+mainLeft:AddToggle("HideTeammates", { Text = "Hide Teammates", Default = false, Callback = function(v) ESP.HideTeammates = v end })
+
+local mainRight = Tabs.Main:AddRightGroupbox("Features")
+mainRight:AddToggle("OffscreenArrows", { Text = "Off-screen Arrows", Default = true, Callback = function(v) ESP.OffscreenArrows = v end })
+mainRight:AddColorPicker("ArrowColor", { Text = "Arrow Color", Default = Color3.fromRGB(255,255,0), Callback = function(c) ESP.ArrowColor = c end })
+mainRight:AddToggle("VisibleCheck", { Text = "Visible Check", Default = true, Callback = function(v) ESP.VisibleCheck = v end })
+mainRight:AddColorPicker("VisibleColor", { Text = "Visible Box Color", Default = Color3.fromRGB(0,255,0), Callback = function(c) ESP.VisibleColor = c end })
+mainRight:AddColorPicker("OccludedColor", { Text = "Occluded Box Color", Default = Color3.fromRGB(255,200,0), Callback = function(c) ESP.OccludedColor = c end })
+mainRight:AddToggle("PriorityTarget", { Text = "Smart Priority", Default = true, Callback = function(v) ESP.PriorityTarget = v end })
+mainRight:AddColorPicker("PriorityColor", { Text = "Priority Color", Default = Color3.fromRGB(255,215,0), Callback = function(c) ESP.PriorityColor = c end })
+
+local visualLeft = Tabs.Visuals:AddLeftGroupbox("Skeleton & Tracers")
+visualLeft:AddToggle("SkeletonEnabled", { Text = "Show Skeleton", Default = false, Callback = function(v) ESP.Skeleton = v end })
+visualLeft:AddColorPicker("SkeletonColor", { Text = "Skeleton Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) ESP.SkeletonColor = c end })
+visualLeft:AddSlider("SkeletonThickness", { Text = "Skeleton Thickness", Default = 2, Min = 1, Max = 5, Rounding = 0, Callback = function(v) ESP.SkeletonThickness = v end })
+visualLeft:AddToggle("ShowTracer", { Text = "Show Tracer", Default = false, Callback = function(v) ESP.ShowTracer = v end })
+visualLeft:AddColorPicker("TracerColor", { Text = "Tracer Color", Default = Color3.fromRGB(255,255,255), Callback = function(c) ESP.TracerColor = c end })
+visualLeft:AddSlider("TracerThickness", { Text = "Tracer Thickness", Default = 1, Min = 1, Max = 4, Rounding = 0, Callback = function(v) ESP.TracerThickness = v end })
+
+local visualRight = Tabs.Visuals:AddRightGroupbox("Chams & Text")
+visualRight:AddToggle("Chams", { Text = "Enable Chams", Default = false, Callback = function(v)
+    ESP.Chams = v
+    for plr, data in pairs(playersData) do
+        local char = plr.Character
+        if v then
+            if char then
+                if not data.highlight or data.highlight.Parent ~= char then
+                    if data.highlight then data.highlight:Destroy() end
+                    local hl = Instance.new("Highlight")
+                    hl.Parent = char
+                    hl.FillColor = ESP.ChamsVisibleColor
+                    hl.FillTransparency = ESP.ChamsTransparency
+                    hl.OutlineTransparency = 1
+                    hl.Enabled = true
+                    data.highlight = hl
+                end
+            end
+        else
+            if data.highlight then
+                data.highlight.Enabled = false
+            end
+        end
+    end
+end })
+visualRight:AddColorPicker("ChamsVisibleColor", { Text = "Visible Chams Color", Default = Color3.fromRGB(0,255,0), Callback = function(c) ESP.ChamsVisibleColor = c end })
+visualRight:AddColorPicker("ChamsOccludedColor", { Text = "Occluded Chams Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) ESP.ChamsOccludedColor = c end })
+visualRight:AddSlider("ChamsTransparency", { Text = "Chams Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 0.05, Callback = function(v) ESP.ChamsTransparency = v end })
+visualRight:AddToggle("ShowName", { Text = "Show Name", Default = true, Callback = function(v) ESP.ShowName = v end })
+visualRight:AddToggle("ShowHealth", { Text = "Show Health", Default = true, Callback = function(v) ESP.ShowHealth = v end })
+visualRight:AddToggle("ShowDistance", { Text = "Show Distance", Default = true, Callback = function(v) ESP.ShowDistance = v end })
+
+local uiGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+uiGroup:AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+uiGroup:AddButton("Unload", fullUnload)
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("glupost_hub")
+SaveManager:SetFolder("glupost_hub/configs")
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+SaveManager:LoadAutoloadConfig()
+
+Library.ToggleKeybind = Options.MenuKeybind
+print("glupost hub v7.0 loaded. Press RightShift to open menu.")
