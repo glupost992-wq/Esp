@@ -1,4 +1,4 @@
--- glupost hub v7.0 (исправлены continue, утечки, приоритет, части персонажа)
+-- glupost hub v7.2 (исправления: Library.ToggleKeybind, Highlight, стрелки, утечки)
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
@@ -29,14 +29,13 @@ local ESP = {
 -- ===== ГЛОБАЛЬНЫЕ ДАННЫЕ =====
 local playersData = {}
 local connections = {}
-local renderData = {}          -- хранит только { player, hrpPos, onScreen, distance, visible, priority }
+local renderData = {}
 local drawingPool = { lines = {}, corners = {}, texts = {}, tracers = {}, skeleton = {}, arrows = {} }
 local renderSteppedConn, heartbeatConn, playerAddedConn, playerRemovingConn = nil, nil, nil, nil
 local isUnloaded = false
 local lastHeartbeat = 0
-local heartbeatInterval = 1/20   -- 20 раз в секунду
+local heartbeatInterval = 1/20
 
--- Один общий RaycastParams
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Blacklist
 
@@ -47,9 +46,23 @@ local function safeDestroy(obj)
         if typeof(obj) == "Instance" then
             obj:Destroy()
         else
-            obj.Visible = false
+            -- Drawing: стараемся полностью удалить, иначе скрываем
+            if obj.Remove then
+                obj:Remove()
+            else
+                obj.Visible = false
+            end
         end
     end)
+end
+
+local function removeFromPool(pool, obj)
+    for i, v in ipairs(pool) do
+        if v == obj then
+            table.remove(pool, i)
+            break
+        end
+    end
 end
 
 local function getFromPool(pool, type)
@@ -90,23 +103,48 @@ local function destroyAll(plrData)
     if plrData.drawings then
         for _, group in pairs(plrData.drawings) do
             if type(group) == "table" then
-                for _, obj in pairs(group) do safeDestroy(obj) end
-            else safeDestroy(group) end
+                for _, obj in pairs(group) do
+                    safeDestroy(obj)
+                    removeFromPool(drawingPool.lines, obj)
+                    removeFromPool(drawingPool.corners, obj)
+                    removeFromPool(drawingPool.texts, obj)
+                    removeFromPool(drawingPool.tracers, obj)
+                    removeFromPool(drawingPool.skeleton, obj)
+                    removeFromPool(drawingPool.arrows, obj)
+                end
+            else
+                safeDestroy(group)
+                removeFromPool(drawingPool.lines, group)
+                removeFromPool(drawingPool.corners, group)
+            end
         end
         plrData.drawings = nil
     end
     if plrData.skeletonLines then
-        for _, l in pairs(plrData.skeletonLines) do safeDestroy(l) end
+        for _, l in pairs(plrData.skeletonLines) do
+            safeDestroy(l)
+            removeFromPool(drawingPool.skeleton, l)
+        end
         plrData.skeletonLines = nil
     end
     if plrData.texts then
-        for _, t in pairs(plrData.texts) do safeDestroy(t) end
+        for _, t in pairs(plrData.texts) do
+            safeDestroy(t)
+            removeFromPool(drawingPool.texts, t)
+        end
         plrData.texts = nil
     end
-    if plrData.tracer then safeDestroy(plrData.tracer); plrData.tracer = nil end
+    if plrData.tracer then
+        safeDestroy(plrData.tracer)
+        removeFromPool(drawingPool.tracers, plrData.tracer)
+        plrData.tracer = nil
+    end
     if plrData.adornment then safeDestroy(plrData.adornment); plrData.adornment = nil end
     if plrData.arrow then
-        for _, a in pairs(plrData.arrow) do safeDestroy(a) end
+        for _, a in pairs(plrData.arrow) do
+            safeDestroy(a)
+            removeFromPool(drawingPool.arrows, a)
+        end
         plrData.arrow = nil
     end
     if plrData.highlight then safeDestroy(plrData.highlight); plrData.highlight = nil end
@@ -114,9 +152,11 @@ end
 
 local function cachePlayerParts(plr, char)
     if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
     local parts = {
         _player = plr,
         Character = char,
+        humanoid = hum,
         Head = char:FindFirstChild("Head"),
         Torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"),
         HumanoidRootPart = char:FindFirstChild("HumanoidRootPart"),
@@ -166,6 +206,7 @@ local function setupPlayer(plr)
                             data.highlight = nil
                         end
                         local hl = Instance.new("Highlight")
+                        hl.Name = "GlupostESPHighlight"
                         hl.Parent = char
                         hl.FillColor = ESP.ChamsVisibleColor
                         hl.FillTransparency = ESP.ChamsTransparency
@@ -206,6 +247,7 @@ local function setupPlayer(plr)
                             data.highlight:Destroy()
                         end
                         local hl = Instance.new("Highlight")
+                        hl.Name = "GlupostESPHighlight"
                         hl.Parent = char
                         hl.FillColor = ESP.ChamsVisibleColor
                         hl.FillTransparency = ESP.ChamsTransparency
@@ -224,7 +266,6 @@ local function isTeammate(plr)
     return LP.Team and plr.Team and LP.Team == plr.Team
 end
 
--- Видимость с кэшем
 local function isVisibleCached(data, part)
     local now = os.clock()
     if now - data.lastVisibleUpdate < 0.2 then return data.visible end
@@ -246,7 +287,7 @@ local function isVisibleCached(data, part)
     return data.visible
 end
 
--- ===== ЛОГИКА (Heartbeat) =====
+-- ===== ЛОГИКА =====
 local function updateLogic()
     if not ESP.Enabled then
         for _, data in pairs(playersData) do hideAll(data) end
@@ -277,8 +318,8 @@ local function updateLogic()
             goto continue
         end
 
-        local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then
+        local hum = parts.humanoid
+        if not hum or hum.Parent == nil or hum.Health <= 0 then
             hideAll(data)
             renderData[plr] = nil
             goto continue
@@ -324,8 +365,8 @@ local function updateLogic()
     end
 end
 
--- ===== ОТРИСОВКА (RenderStepped) =====
-local function drawArrow(plrData, arrowData)
+-- ===== ОТРИСОВКА =====
+local function drawArrow(plrData, parts, arrowData)
     if not ESP.OffscreenArrows then
         if plrData.arrow then
             for _, a in pairs(plrData.arrow) do a.Visible = false end
@@ -338,11 +379,18 @@ local function drawArrow(plrData, arrowData)
         end
         return
     end
-    local screenPos = arrowData.hrpPos
+    -- Вычисляем направление через камеру
+    local hrp = parts.HumanoidRootPart
+    if not hrp then return end
+    local camCF = Camera.CFrame
+    local dir3 = (hrp.Position - camCF.Position).Unit
+    local dir2 = Vector2.new(
+        camCF.RightVector:Dot(dir3),
+        -camCF.UpVector:Dot(dir3)
+    )
+    if dir2.Magnitude < 0.001 then return end
+    local dir = dir2.Unit
     local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
-    local vec = Vector2.new(screenPos.X, screenPos.Y) - center
-    if vec.Magnitude < 0.001 then return end
-    local dir = vec.Unit
     local radius = math.min(Camera.ViewportSize.X, Camera.ViewportSize.Y) * 0.4
     local arrowPos = center + dir * radius
     arrowPos = Vector2.new(
@@ -448,7 +496,7 @@ local function drawBox(plrData, parts, arrowData)
 end
 
 local function draw3DBox(plrData, parts, arrowData)
-    if not ESP.Enabled or isTeammate(parts._player) or ESP.Chams then
+    if not ESP.Enabled or isTeammate(parts._player) then
         if plrData.adornment then plrData.adornment.Visible = false end
         return
     end
@@ -474,7 +522,6 @@ end
 
 local function drawSkeleton(plrData, parts, arrowData)
     local plr = parts._player
-    -- Динамическое обновление частей для R15
     if plr and plr.Character and (
         not parts.LeftLowerArm or not parts.RightLowerArm or
         not parts.LeftLowerLeg or not parts.RightLowerLeg
@@ -542,15 +589,22 @@ local function drawTexts(plrData, parts, arrowData)
         end
         return
     end
-    local char = parts._player.Character
-    if not char then
+    local head = parts.Head
+    if not head then
         if plrData.texts then
             for _, t in pairs(plrData.texts) do t.Visible = false end
         end
         return
     end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then
+    local headPos = Camera:WorldToViewportPoint(head.Position)
+    if not headPos then
+        if plrData.texts then
+            for _, t in pairs(plrData.texts) do t.Visible = false end
+        end
+        return
+    end
+    local hum = parts.humanoid
+    if not hum or hum.Parent == nil or hum.Health <= 0 then
         if plrData.texts then
             for _, t in pairs(plrData.texts) do t.Visible = false end
         end
@@ -567,8 +621,10 @@ local function drawTexts(plrData, parts, arrowData)
             texts.NameText.Font = 2
             texts.NameText.Size = 14
         end
-        texts.NameText.Position = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y - 55 - yOffset)
-        texts.NameText.Text = parts._player.DisplayName
+        local name = parts._player.DisplayName
+        if #name > 20 then name = name:sub(1,18)..".." end
+        texts.NameText.Position = Vector2.new(arrowData.hrpPos.X, headPos.Y - 15 - yOffset)
+        texts.NameText.Text = name
         texts.NameText.Color = arrowData.priority and ESP.PriorityColor or ESP.BoxColor
         texts.NameText.Visible = true
         yOffset = yOffset + 16
@@ -584,7 +640,7 @@ local function drawTexts(plrData, parts, arrowData)
             texts.HealthText.Font = 2
             texts.HealthText.Size = 12
         end
-        texts.HealthText.Position = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y - 40 - yOffset)
+        texts.HealthText.Position = Vector2.new(arrowData.hrpPos.X, headPos.Y - 15 - yOffset)
         texts.HealthText.Text = "❤️ " .. math.floor(hum.Health)
         texts.HealthText.Color = Color3.fromRGB(255,100,100)
         texts.HealthText.Visible = true
@@ -601,7 +657,7 @@ local function drawTexts(plrData, parts, arrowData)
             texts.DistText.Font = 2
             texts.DistText.Size = 12
         end
-        texts.DistText.Position = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y - 25 - yOffset)
+        texts.DistText.Position = Vector2.new(arrowData.hrpPos.X, headPos.Y - 15 - yOffset)
         texts.DistText.Text = math.floor(arrowData.distance) .. " studs"
         texts.DistText.Color = Color3.fromRGB(200,200,200)
         texts.DistText.Visible = true
@@ -668,7 +724,7 @@ local function drawAll()
         drawSkeleton(data, parts, rd)
         drawTexts(data, parts, rd)
         drawTracer(data, parts, rd)
-        drawArrow(data, rd)
+        drawArrow(data, parts, rd)
         drawChams(data, rd.visible, rd.priority)
         ::continue::
     end
@@ -733,7 +789,7 @@ renderSteppedConn = RunService.RenderStepped:Connect(onRender)
 -- === GUI ===
 local Window = Library:CreateWindow({
     Title = "glupost hub",
-    Footer = "v7.0 stable",
+    Footer = "v7.2 stable",
     NotifySide = "Right",
     ShowCustomCursor = true,
 })
@@ -775,9 +831,16 @@ visualRight:AddToggle("Chams", { Text = "Enable Chams", Default = false, Callbac
         local char = plr.Character
         if v then
             if char then
+                -- Ищем только наш Highlight, чтобы не конфликтовать
+                local existing = char:FindFirstChild("GlupostESPHighlight")
+                if existing and existing ~= data.highlight then
+                    if data.highlight then data.highlight:Destroy() end
+                    data.highlight = existing
+                end
                 if not data.highlight or data.highlight.Parent ~= char then
                     if data.highlight then data.highlight:Destroy() end
                     local hl = Instance.new("Highlight")
+                    hl.Name = "GlupostESPHighlight"
                     hl.Parent = char
                     hl.FillColor = ESP.ChamsVisibleColor
                     hl.FillTransparency = ESP.ChamsTransparency
@@ -814,5 +877,7 @@ SaveManager:BuildConfigSection(Tabs["UI Settings"])
 ThemeManager:ApplyToTab(Tabs["UI Settings"])
 SaveManager:LoadAutoloadConfig()
 
-Library.ToggleKeybind = Options.MenuKeybind
-print("glupost hub v7.0 loaded. Press RightShift to open menu.")
+-- Исправлено: используем .Value для ключа меню
+Library.ToggleKeybind = Options.MenuKeybind.Value
+
+print("glupost hub v7.2 loaded. Press RightShift to open menu.")
