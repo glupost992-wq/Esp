@@ -1,4 +1,4 @@
--- glupost hub v11.0 (ESP + Aimbot + Silent, полная версия)
+-- glupost hub v13.2 (исправлен синтаксис updateBoxPosition, оптимизирован isWeaponRaycast, упрощён Heartbeat)
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
@@ -12,91 +12,101 @@ local UIS = game:GetService("UserInputService")
 
 if not Drawing then error("Drawing API not supported") end
 
--- ===== НАСТРОЙКИ =====
-local ESP = {
-    Enabled = true,
-    BoxType = "2D",
-    BoxColor = Color3.fromRGB(0,255,0),
-    BoxThickness = 2,
-    Skeleton = false,
-    SkeletonColor = Color3.fromRGB(255,0,0),
-    SkeletonThickness = 2,
-    HideTeammates = false,
-    MaxDistance = 500,
-    MinDistance = 0,
-    ShowHealth = true,
-    ShowName = true,
-    ShowTracer = false,
-    ShowDistance = true,
-    TracerColor = Color3.fromRGB(255,255,255),
-    TracerThickness = 1,
-    OffscreenArrows = true,
-    ArrowColor = Color3.fromRGB(255,255,0),
-    ArrowSize = 20,
-    VisibleCheck = true,
-    VisibleColor = Color3.fromRGB(0,255,0),
-    OccludedColor = Color3.fromRGB(255,200,0),
-    Chams = false,
-    ChamsVisibleColor = Color3.fromRGB(0,255,0),
-    ChamsOccludedColor = Color3.fromRGB(255,0,0),
-    ChamsTransparency = 0.5,
-    PriorityTarget = true,
-    PriorityColor = Color3.fromRGB(255,215,0),
-    EnemyColor = Color3.fromRGB(255,0,0),
-    AllyColor = Color3.fromRGB(0,255,0),
-    ShowFPS = false,
-    CameraEnabled = false,
-    SilentEnabled = false,
-    TargetPart = "Head",
-    TeamCheck = true,
-    WallCheck = true,
-    Smoothness = 0.3,
-    HitChance = 100,
-    ShowFOV = false,
-    FOVRadius = 150,
-    FOVColor = Color3.fromRGB(255,255,255),
-    FOVThickness = 2,
-    FilledFOV = false,
-    FOVTransparency = 0.3,
-    AimbotKey = Enum.UserInputType.MouseButton2,
+-- ===== КОНФИГУРАЦИЯ (разделение на подсистемы) =====
+local Config = {
+    ESP = {
+        Enabled = true,
+        BoxType = "2D",
+        BoxColor = Color3.fromRGB(0,255,0),
+        BoxThickness = 2,
+        Skeleton = false,
+        SkeletonColor = Color3.fromRGB(255,0,0),
+        SkeletonThickness = 2,
+        HideTeammates = false,
+        MaxDistance = 500,
+        MinDistance = 0,
+        ShowHealth = true,
+        ShowName = true,
+        ShowTracer = false,
+        ShowDistance = true,
+        TracerColor = Color3.fromRGB(255,255,255),
+        TracerThickness = 1,
+        OffscreenArrows = true,
+        ArrowColor = Color3.fromRGB(255,255,0),
+        ArrowSize = 20,
+        VisibleCheck = true,
+        VisibleColor = Color3.fromRGB(0,255,0),
+        OccludedColor = Color3.fromRGB(255,200,0),
+        Chams = false,
+        ChamsVisibleColor = Color3.fromRGB(0,255,0),
+        ChamsOccludedColor = Color3.fromRGB(255,0,0),
+        ChamsTransparency = 0.5,
+        PriorityTarget = true,
+        PriorityColor = Color3.fromRGB(255,215,0),
+        EnemyColor = Color3.fromRGB(255,0,0),
+        AllyColor = Color3.fromRGB(0,255,0),
+        ShowFPS = false,
+    },
+    Aimbot = {
+        CameraEnabled = false,
+        SilentEnabled = false,
+        TargetPart = "Head",
+        TeamCheck = true,
+        WallCheck = true,
+        Smoothness = 0.3,
+        HitChance = 100,
+        ShowFOV = false,
+        FOVRadius = 150,
+        FOVColor = Color3.fromRGB(255,255,255),
+        FOVThickness = 2,
+        FilledFOV = false,
+        FOVTransparency = 0.3,
+        AimbotKey = Enum.UserInputType.MouseButton2,
+    }
 }
 
 -- ===== ГЛОБАЛЬНЫЕ ДАННЫЕ =====
-local playersData = {}
-local connections = {}
-local renderData = {}
-local drawingPool = { lines = {}, corners = {}, texts = {}, tracers = {}, skeleton = {}, arrows = {} }
-local renderSteppedConn, heartbeatConn, playerAddedConn, playerRemovingConn = nil, nil, nil, nil
-local hotkeyConn = nil
-local isUnloaded = false
-local lastHeartbeat = 0
-local heartbeatInterval = 1/20
-local fpsRing = {}
-local fpsIndex = 0
-local currentFPS = 60
-local fpsLabel = nil
-local drawCountLabel = nil
+local ESPController = {
+    playersData = {},
+    connections = {},
+    renderData = {},
+    drawingPool = { lines = {}, corners = {}, texts = {}, tracers = {}, skeleton = {}, arrows = {} },
+    isUnloaded = false,
+    lastFullUpdate = 0,
+    fullUpdateInterval = 0.033,
+    lastSkeletonUpdate = 0,
+    skeletonInterval = 0.066,
+    lastTextUpdate = 0,
+    textInterval = 0.1,
+    lastArrowUpdate = 0,
+    arrowInterval = 0.066,
+    fpsSamples = {},
+    fpsSum = 0,
+    fpsCount = 0,
+    currentFPS = 60,
+    fpsLabel = nil,
+    drawCountLabel = nil,
+    fovCircle = Drawing.new("Circle"),
+    rayParams = RaycastParams.new(),
+    aimRayParams = RaycastParams.new(),
+    oldNamecall = nil,
+    oldIndex = nil,
+}
 
-local fovCircle = Drawing.new("Circle")
-fovCircle.Visible = false
-fovCircle.NumSides = 60
+ESPController.rayParams.FilterType = Enum.RaycastFilterType.Exclude
+ESPController.rayParams.FilterDescendantsInstances = { Camera }
+ESPController.aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
+ESPController.fovCircle.Visible = false
+ESPController.fovCircle.NumSides = 60
 
-local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Exclude
-rayParams.FilterDescendantsInstances = { Camera }
-
-local aimRayParams = RaycastParams.new()
-aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
-
-local oldNamecall = nil
-local oldIndex = nil
-
--- ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+-- ===== УТИЛИТЫ =====
 local function safeDestroy(obj)
     if not obj then return end
     pcall(function()
         if typeof(obj) == "Instance" then obj:Destroy()
-        else if obj.Remove then obj:Remove() else obj.Visible = false end end
+        else
+            if obj.Remove then obj:Remove() else obj.Visible = false end
+        end
     end)
 end
 
@@ -106,8 +116,9 @@ end
 
 local function getFromPool(pool, type)
     for i, obj in ipairs(pool) do
-        local ok, visible = pcall(function() return obj.Visible end)
-        if ok and visible == false then return obj end
+        if obj and obj.Visible == false then
+            return obj
+        end
     end
     local new = Drawing.new(type)
     table.insert(pool, new)
@@ -143,31 +154,35 @@ local function destroyAll(plrData)
             if type(group) == "table" then
                 for _, obj in pairs(group) do
                     safeDestroy(obj)
-                    removeFromPool(drawingPool.lines, obj)
-                    removeFromPool(drawingPool.corners, obj)
+                    removeFromPool(ESPController.drawingPool.lines, obj)
+                    removeFromPool(ESPController.drawingPool.corners, obj)
                 end
             else
                 safeDestroy(group)
-                removeFromPool(drawingPool.lines, group)
+                removeFromPool(ESPController.drawingPool.lines, group)
             end
         end
         plrData.drawings = nil
     end
     if plrData.skeletonLines then
-        for _, l in pairs(plrData.skeletonLines) do safeDestroy(l); removeFromPool(drawingPool.skeleton, l) end
+        for _, l in pairs(plrData.skeletonLines) do safeDestroy(l); removeFromPool(ESPController.drawingPool.skeleton, l) end
         plrData.skeletonLines = nil
     end
     if plrData.texts then
-        for _, t in pairs(plrData.texts) do safeDestroy(t); removeFromPool(drawingPool.texts, t) end
+        for _, t in pairs(plrData.texts) do safeDestroy(t); removeFromPool(ESPController.drawingPool.texts, t) end
         plrData.texts = nil
     end
-    if plrData.tracer then safeDestroy(plrData.tracer); removeFromPool(drawingPool.tracers, plrData.tracer); plrData.tracer = nil end
+    if plrData.tracer then safeDestroy(plrData.tracer); removeFromPool(ESPController.drawingPool.tracers, plrData.tracer); plrData.tracer = nil end
     if plrData.adornment then safeDestroy(plrData.adornment); plrData.adornment = nil end
     if plrData.arrow then
-        for _, a in pairs(plrData.arrow) do safeDestroy(a); removeFromPool(drawingPool.arrows, a) end
+        for _, a in pairs(plrData.arrow) do safeDestroy(a); removeFromPool(ESPController.drawingPool.arrows, a) end
         plrData.arrow = nil
     end
     if plrData.highlight then safeDestroy(plrData.highlight); plrData.highlight = nil end
+end
+
+local function isTeammate(plr)
+    return LP.Team and plr.Team and LP.Team == plr.Team
 end
 
 local function cachePlayerParts(plr, char)
@@ -193,73 +208,106 @@ local function cachePlayerParts(plr, char)
         LeftFoot = char:FindFirstChild("LeftFoot"),
         RightFoot = char:FindFirstChild("RightFoot"),
     }
-    if playersData[plr] then playersData[plr].parts = parts end
+    if ESPController.playersData[plr] then ESPController.playersData[plr].parts = parts end
 end
 
--- ===== SETUP PLAYER =====
-local function setupPlayer(plr)
-    if plr == LP then return end
-    local oldData = playersData[plr]
-    if oldData then hideAll(oldData) end
-    if connections[plr] then
-        for _, conn in pairs(connections[plr]) do if conn then conn:Disconnect() end end
-    end
-    playersData[plr] = {
-        parts = {},
-        drawings = nil,
-        skeletonLines = nil,
-        texts = nil,
-        tracer = nil,
-        adornment = nil,
-        arrow = nil,
-        highlight = nil,
-        visible = false,
-        lastVisibleUpdate = 0,
-    }
-    renderData[plr] = nil
-    connections[plr] = {}
-
-    local charAddedConn = plr.CharacterAdded:Connect(function(char)
-        task.spawn(function()
-            if LP.Character then rayParams.FilterDescendantsInstances = { LP.Character, Camera } end
-            local hrp = char:WaitForChild("HumanoidRootPart", 5)
-            local head = char:WaitForChild("Head", 5)
-            if hrp and head and char.Parent then
-                cachePlayerParts(plr, char)
-                local data = playersData[plr]
-                if data then
-                    if data.highlight then safeDestroy(data.highlight); data.highlight = nil end
-                    if ESP.Chams then
-                        local hl = Instance.new("Highlight")
-                        hl.Name = "GlupostESPHighlight"
-                        hl.FillColor = ESP.ChamsVisibleColor
-                        hl.OutlineColor = ESP.ChamsOccludedColor
-                        hl.FillTransparency = ESP.ChamsTransparency
-                        hl.Parent = char
-                        data.highlight = hl
-                    end
-                end
-            end
-        end)
-    end)
-    local charRemovingConn = plr.CharacterRemoving:Connect(function()
-        if playersData[plr] then hideAll(playersData[plr]) end
-    end)
-    connections[plr].CharacterAdded = charAddedConn
-    connections[plr].CharacterRemoving = charRemovingConn
-    if plr.Character then cachePlayerParts(plr, plr.Character) end
-end
-
--- ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ESP =====
-local function isTeammate(plr)
-    if not ESP.HideTeammates then return false end
-    return LP.Team and plr.Team and LP.Team == plr.Team
-end
-
+-- ===== ФУНКЦИИ ESP =====
 local function getBoxColor(plr, visible, priority)
-    if priority then return ESP.PriorityColor end
-    if ESP.VisibleCheck then return visible and ESP.VisibleColor or ESP.OccludedColor
-    else return isTeammate(plr) and ESP.AllyColor or ESP.EnemyColor end
+    if priority then return Config.ESP.PriorityColor end
+    if Config.ESP.VisibleCheck then
+        return visible and Config.ESP.VisibleColor or Config.ESP.OccludedColor
+    else
+        if Config.ESP.HideTeammates and isTeammate(plr) then
+            return Config.ESP.AllyColor
+        else
+            return Config.ESP.EnemyColor
+        end
+    end
+end
+
+-- ===== ИСПРАВЛЕННАЯ updateBoxPosition (с закрывающим end) =====
+local function updateBoxPosition(plrData, parts, rd)
+    if rd.distance > Config.ESP.MaxDistance or rd.distance < Config.ESP.MinDistance or not rd.onScreen then
+        if plrData.drawings then
+            if plrData.drawings.lines then for _,l in pairs(plrData.drawings.lines) do l.Visible = false end end
+            if plrData.drawings.corners then for _,c in pairs(plrData.drawings.corners) do c.Visible = false end end
+        end
+        return false
+    end
+    local head = parts.Head
+    local hrp = parts.HumanoidRootPart
+    if not head or not hrp then return false end
+    local headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0,0.5,0))
+    local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0,3,0))
+    local height = math.abs(headPos.Y - legPos.Y)
+    if height < 2 then return false end
+    local width = height * 0.8
+    local left = rd.hrpPos.X - width/2
+    local top = headPos.Y
+    local right = left + width
+    local bottom = top + height
+    local color = getBoxColor(parts._player, rd.visible, rd.priority)
+    if Config.ESP.BoxType == "2D" then
+        if not plrData.drawings then plrData.drawings = {} end
+        local lines = plrData.drawings.lines
+        if not lines then
+            lines = {}
+            for i=1,4 do lines[i] = getFromPool(ESPController.drawingPool.lines, "Line") end
+            plrData.drawings.lines = lines
+        end
+        lines[1].From = Vector2.new(left, top); lines[1].To = Vector2.new(right, top)
+        lines[2].From = Vector2.new(right, top); lines[2].To = Vector2.new(right, bottom)
+        lines[3].From = Vector2.new(right, bottom); lines[3].To = Vector2.new(left, bottom)
+        lines[4].From = Vector2.new(left, bottom); lines[4].To = Vector2.new(left, top)
+        for i=1,4 do
+            lines[i].Color = color
+            lines[i].Thickness = rd.priority and Config.ESP.BoxThickness+2 or Config.ESP.BoxThickness
+            lines[i].Visible = true
+        end
+        if plrData.drawings.corners then for _,c in pairs(plrData.drawings.corners) do c.Visible = false end end
+    elseif Config.ESP.BoxType == "Corner" then
+        if not plrData.drawings then plrData.drawings = {} end
+        local corners = plrData.drawings.corners
+        if not corners then
+            corners = {}
+            for i=1,8 do corners[i] = getFromPool(ESPController.drawingPool.corners, "Line") end
+            plrData.drawings.corners = corners
+        end
+        local len = 12
+        corners[1].From = Vector2.new(left, top); corners[1].To = Vector2.new(left+len, top)
+        corners[2].From = Vector2.new(left, top); corners[2].To = Vector2.new(left, top+len)
+        corners[3].From = Vector2.new(right, top); corners[3].To = Vector2.new(right-len, top)
+        corners[4].From = Vector2.new(right, top); corners[4].To = Vector2.new(right, top+len)
+        corners[5].From = Vector2.new(left, bottom); corners[5].To = Vector2.new(left+len, bottom)
+        corners[6].From = Vector2.new(left, bottom); corners[6].To = Vector2.new(left, bottom-len)
+        corners[7].From = Vector2.new(right, bottom); corners[7].To = Vector2.new(right-len, bottom)
+        corners[8].From = Vector2.new(right, bottom); corners[8].To = Vector2.new(right, bottom-len)
+        for i=1,8 do
+            corners[i].Color = color
+            corners[i].Thickness = rd.priority and Config.ESP.BoxThickness+2 or Config.ESP.BoxThickness
+            corners[i].Visible = true
+        end
+        if plrData.drawings.lines then for _,l in pairs(plrData.drawings.lines) do l.Visible = false end end
+    elseif Config.ESP.BoxType == "3D" then
+        if plrData.drawings then
+            if plrData.drawings.lines then for _,l in pairs(plrData.drawings.lines) do l.Visible = false end end
+            if plrData.drawings.corners then for _,c in pairs(plrData.drawings.corners) do c.Visible = false end end
+        end
+        if not Config.ESP.Chams then
+            if not plrData.adornment then
+                plrData.adornment = Instance.new("BoxHandleAdornment")
+                plrData.adornment.AlwaysOnTop = true
+                plrData.adornment.Transparency = 0.5
+                plrData.adornment.ZIndex = 0
+                plrData.adornment.Parent = hrp
+            end
+            plrData.adornment.Adornee = hrp
+            plrData.adornment.Size = hrp.Size + Vector3.new(2,3,2)
+            plrData.adornment.Color = color
+            plrData.adornment.Visible = true
+        end
+    end
+    return true
 end
 
 local function isVisibleCached(data, part)
@@ -272,167 +320,25 @@ local function isVisibleCached(data, part)
     local magnitude = delta.Magnitude
     if magnitude < 0.001 then data.visible = true; return true end
     local direction = delta / magnitude
-    if LP.Character then rayParams.FilterDescendantsInstances = { LP.Character, Camera }
-    else rayParams.FilterDescendantsInstances = { Camera } end
-    local result = workspace:Raycast(origin, direction * magnitude, rayParams)
+    if LP.Character then ESPController.rayParams.FilterDescendantsInstances = { LP.Character, Camera }
+    else ESPController.rayParams.FilterDescendantsInstances = { Camera } end
+    local result = workspace:Raycast(origin, direction * magnitude, ESPController.rayParams)
     if not result then data.visible = true; return true end
     local distToHit = (result.Position - origin).Magnitude
     data.visible = distToHit >= magnitude - 0.5
     return data.visible
 end
 
--- ===== ФУНКЦИЯ ВЫБОРА ЦЕЛИ ДЛЯ АИМБОТА =====
-local function getClosestPlayerToCursor()
-    local closestPart = nil
-    local shortestDistance = ESP.FOVRadius
-    local mousePos = UIS:GetMouseLocation()
-
-    for plr, data in pairs(playersData) do
-        if ESP.TeamCheck and isTeammate(plr) then continue end
-        local parts = data.parts
-        if not parts then continue end
-        local targetPart = parts[ESP.TargetPart]
-        local hum = parts.humanoid
-        if not targetPart or not hum or hum.Health <= 0 then continue end
-
-        local distanceStuds = (Camera.CFrame.Position - targetPart.Position).Magnitude
-        if distanceStuds > ESP.MaxDistance then continue end
-
-        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-        if not onScreen then continue end
-
-        if ESP.WallCheck then
-            local origin = Camera.CFrame.Position
-            local direction = targetPart.Position - origin
-            aimRayParams.FilterDescendantsInstances = { Camera, LP.Character, parts.Character }
-            local raycastResult = workspace:Raycast(origin, direction, aimRayParams)
-            if raycastResult then continue end
-        end
-
-        local distPixels = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-        if distPixels < shortestDistance then
-            shortestDistance = distPixels
-            closestPart = targetPart
-        end
-    end
-    return closestPart
-end
-
--- ===== SILENT AIMBOT =====
-local function initSilentAimbot()
-    local gmt = getrawmetatable(game)
-    if not gmt then return end
-    oldNamecall = gmt.__namecall
-    oldIndex = gmt.__index
-    setreadonly(gmt, false)
-
-    gmt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-        if ESP.SilentEnabled and isAimbotKeyPressed() and not UIS:GetFocusedTextBox() and not isUnloaded then
-            if method == "Raycast" and self == workspace then
-                local targetPart = getClosestPlayerToCursor()
-                if targetPart and math.random(1,100) <= ESP.HitChance then
-                    local origin = args[1]
-                    local newDirection = (targetPart.Position - origin).Unit * 9999
-                    return oldNamecall(self, origin, newDirection, args[3])
-                end
-            end
-        end
-        return oldNamecall(self, ...)
-    end)
-
-    gmt.__index = newcclosure(function(self, key)
-        if ESP.SilentEnabled and isAimbotKeyPressed() and not UIS:GetFocusedTextBox() and not isUnloaded then
-            if typeof(self) == "Instance" and self:IsA("Mouse") then
-                if key == "Hit" then
-                    local targetPart = getClosestPlayerToCursor()
-                    if targetPart and math.random(1,100) <= ESP.HitChance then
-                        return CFrame.new(targetPart.Position)
-                    end
-                elseif key == "Target" then
-                    local targetPart = getClosestPlayerToCursor()
-                    if targetPart and math.random(1,100) <= ESP.HitChance then
-                        return targetPart
-                    end
-                end
-            end
-        end
-        return oldIndex(self, key)
-    end)
-    setreadonly(gmt, true)
-end
-
--- ===== ОТРИСОВКА ESP =====
-local function drawCornerBox(plrData, parts, hrpPos, distance, visible, priority)
-    if distance > ESP.MaxDistance or distance < ESP.MinDistance then return end
-    local head = parts.Head
-    local hrp = parts.HumanoidRootPart
-    if not head or not hrp then return end
-    local headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
-    local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
-    local height = math.abs(headPos.Y - legPos.Y)
-    if height < 2 then return end
-    local width = height * 0.8
-    local left = hrpPos.X - width/2
-    local top = headPos.Y
-    local right = left + width
-    local bottom = top + height
-    local color = getBoxColor(parts._player, visible, priority)
-    if not plrData.drawings then plrData.drawings = {} end
-    local corners = plrData.drawings.corners
-    if not corners then
-        corners = {}
-        for i = 1, 8 do corners[i] = getFromPool(drawingPool.corners, "Line") end
-        plrData.drawings.corners = corners
-    end
-    local len = 12
-    corners[1].From = Vector2.new(left, top); corners[1].To = Vector2.new(left + len, top)
-    corners[2].From = Vector2.new(left, top); corners[2].To = Vector2.new(left, top + len)
-    corners[3].From = Vector2.new(right, top); corners[3].To = Vector2.new(right - len, top)
-    corners[4].From = Vector2.new(right, top); corners[4].To = Vector2.new(right, top + len)
-    corners[5].From = Vector2.new(left, bottom); corners[5].To = Vector2.new(left + len, bottom)
-    corners[6].From = Vector2.new(left, bottom); corners[6].To = Vector2.new(left, bottom - len)
-    corners[7].From = Vector2.new(right, bottom); corners[7].To = Vector2.new(right - len, bottom)
-    corners[8].From = Vector2.new(right, bottom); corners[8].To = Vector2.new(right, bottom - len)
-    for i = 1, 8 do
-        corners[i].Color = color
-        corners[i].Thickness = ESP.BoxThickness
-        corners[i].Visible = true
-    end
-end
-
-local function draw3DBox(plrData, parts, visible, priority)
-    if not ESP.Enabled or isTeammate(parts._player) or ESP.Chams then
-        if plrData.adornment then plrData.adornment.Visible = false end
-        return
-    end
-    local hrp = parts.HumanoidRootPart
-    if not hrp then return end
-    if not plrData.adornment or not plrData.adornment.Parent then
-        if plrData.adornment then plrData.adornment:Destroy() end
-        plrData.adornment = Instance.new("BoxHandleAdornment")
-        plrData.adornment.AlwaysOnTop = true
-        plrData.adornment.Transparency = 0.5
-        plrData.adornment.ZIndex = 0
-        plrData.adornment.Parent = hrp
-    end
-    plrData.adornment.Adornee = hrp
-    plrData.adornment.Size = hrp.Size + Vector3.new(2,3,2)
-    plrData.adornment.Color = getBoxColor(parts._player, visible, priority)
-    plrData.adornment.Visible = true
-end
-
-local function drawSkeleton(plrData, parts, arrowData)
-    if not ESP.Skeleton then return end
+local function updateSkeletonOptimized(plrData, parts, rd)
+    if not Config.ESP.Skeleton then return end
     local plr = parts._player
     if plr and plr.Character and (
         not parts.LeftLowerArm or not parts.RightLowerArm or
         not parts.LeftLowerLeg or not parts.RightLowerLeg
     ) then
         cachePlayerParts(plr, plr.Character)
-        parts = playersData[plr].parts
-        if not parts then return
+        parts = ESPController.playersData[plr].parts
+        if not parts then return end
     end
     local function getPos(part)
         if part then
@@ -452,10 +358,10 @@ local function drawSkeleton(plrData, parts, arrowData)
     }
     if not plrData.skeletonLines then
         plrData.skeletonLines = {}
-        for i = 1, #connectionsMap do plrData.skeletonLines[i] = getFromPool(drawingPool.skeleton, "Line") end
+        for i = 1, #connectionsMap do plrData.skeletonLines[i] = getFromPool(ESPController.drawingPool.skeleton, "Line") end
     end
     local idx = 1
-    local color = arrowData.priority and ESP.PriorityColor or ESP.SkeletonColor
+    local color = rd.priority and Config.ESP.PriorityColor or Config.ESP.SkeletonColor
     for _, conn in ipairs(connectionsMap) do
         local a = getPos(conn[1])
         local b = getPos(conn[2])
@@ -463,7 +369,7 @@ local function drawSkeleton(plrData, parts, arrowData)
             plrData.skeletonLines[idx].From = Vector2.new(a.X, a.Y)
             plrData.skeletonLines[idx].To = Vector2.new(b.X, b.Y)
             plrData.skeletonLines[idx].Color = color
-            plrData.skeletonLines[idx].Thickness = ESP.SkeletonThickness
+            plrData.skeletonLines[idx].Thickness = Config.ESP.SkeletonThickness
             plrData.skeletonLines[idx].Visible = true
         else
             plrData.skeletonLines[idx].Visible = false
@@ -473,9 +379,9 @@ local function drawSkeleton(plrData, parts, arrowData)
     for i = idx, #plrData.skeletonLines do if plrData.skeletonLines[i] then plrData.skeletonLines[i].Visible = false end end
 end
 
-local function drawTexts(plrData, parts, arrowData)
-    if not ESP.ShowName and not ESP.ShowHealth and not ESP.ShowDistance then return end
-    if arrowData.distance > ESP.MaxDistance or arrowData.distance < ESP.MinDistance or not arrowData.onScreen then
+local function updateTextOptimized(plrData, parts, rd)
+    if not Config.ESP.ShowName and not Config.ESP.ShowHealth and not Config.ESP.ShowDistance then return end
+    if rd.distance > Config.ESP.MaxDistance or rd.distance < Config.ESP.MinDistance or not rd.onScreen then
         if plrData.texts then
             for _, t in pairs(plrData.texts) do t.Visible = false end
         end
@@ -489,79 +395,61 @@ local function drawTexts(plrData, parts, arrowData)
     if not plrData.texts then plrData.texts = {} end
     local texts = plrData.texts
     local yOffset = 0
-    if ESP.ShowName then
+    if Config.ESP.ShowName then
         if not texts.NameText then
-            texts.NameText = getFromPool(drawingPool.texts, "Text")
+            texts.NameText = getFromPool(ESPController.drawingPool.texts, "Text")
             texts.NameText.Center = true
             texts.NameText.Outline = true
             texts.NameText.Font = 2
             texts.NameText.Size = 14
         end
-        texts.NameText.Position = Vector2.new(arrowData.hrpPos.X, headPos.Y - 15 - yOffset)
+        texts.NameText.Position = Vector2.new(rd.hrpPos.X, headPos.Y - 15 - yOffset)
         texts.NameText.Text = parts._player.DisplayName
-        texts.NameText.Color = arrowData.priority and ESP.PriorityColor or getBoxColor(parts._player, arrowData.visible, false)
+        texts.NameText.Color = rd.priority and Config.ESP.PriorityColor or getBoxColor(parts._player, rd.visible, false)
         texts.NameText.Visible = true
         yOffset = yOffset + 16
     elseif texts.NameText then texts.NameText.Visible = false end
 
-    if ESP.ShowHealth then
+    if Config.ESP.ShowHealth then
         if not texts.HealthText then
-            texts.HealthText = getFromPool(drawingPool.texts, "Text")
+            texts.HealthText = getFromPool(ESPController.drawingPool.texts, "Text")
             texts.HealthText.Center = true
             texts.HealthText.Outline = true
             texts.HealthText.Font = 2
             texts.HealthText.Size = 12
         end
-        texts.HealthText.Position = Vector2.new(arrowData.hrpPos.X, headPos.Y - 15 - yOffset)
+        texts.HealthText.Position = Vector2.new(rd.hrpPos.X, headPos.Y - 15 - yOffset)
         texts.HealthText.Text = "❤️ " .. math.floor(hum.Health)
         texts.HealthText.Color = Color3.fromRGB(255,100,100)
         texts.HealthText.Visible = true
         yOffset = yOffset + 16
     elseif texts.HealthText then texts.HealthText.Visible = false end
 
-    if ESP.ShowDistance then
+    if Config.ESP.ShowDistance then
         if not texts.DistText then
-            texts.DistText = getFromPool(drawingPool.texts, "Text")
+            texts.DistText = getFromPool(ESPController.drawingPool.texts, "Text")
             texts.DistText.Center = true
             texts.DistText.Outline = true
             texts.DistText.Font = 2
             texts.DistText.Size = 12
         end
-        texts.DistText.Position = Vector2.new(arrowData.hrpPos.X, headPos.Y - 15 - yOffset)
-        texts.DistText.Text = math.floor(arrowData.distance) .. " studs"
+        texts.DistText.Position = Vector2.new(rd.hrpPos.X, headPos.Y - 15 - yOffset)
+        texts.DistText.Text = math.floor(rd.distance) .. " studs"
         texts.DistText.Color = Color3.fromRGB(200,200,200)
         texts.DistText.Visible = true
     elseif texts.DistText then texts.DistText.Visible = false end
 end
 
-local function drawTracer(plrData, parts, arrowData)
-    if not ESP.ShowTracer then return end
-    if arrowData.distance > ESP.MaxDistance or arrowData.distance < ESP.MinDistance or not arrowData.onScreen then
-        if plrData.tracer then plrData.tracer.Visible = false end
-        return
-    end
-    if not plrData.tracer then
-        plrData.tracer = getFromPool(drawingPool.tracers, "Line")
-        plrData.tracer.Thickness = ESP.TracerThickness
-    end
-    local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
-    local footPos = Vector2.new(arrowData.hrpPos.X, arrowData.hrpPos.Y + 30)
-    plrData.tracer.From = screenCenter
-    plrData.tracer.To = footPos
-    plrData.tracer.Color = arrowData.priority and ESP.PriorityColor or ESP.TracerColor
-    plrData.tracer.Visible = true
-end
-
-local function drawArrow(plrData, arrowData)
-    if not ESP.OffscreenArrows then
+local function updateArrowOptimized(plrData, rd)
+    if not Config.ESP.OffscreenArrows then
         if plrData.arrow then for _, a in pairs(plrData.arrow) do a.Visible = false end end
         return
     end
-    if arrowData.onScreen then
+    if rd.onScreen then
         if plrData.arrow then for _, a in pairs(plrData.arrow) do a.Visible = false end end
         return
     end
-    local hrp = arrowData.parts and arrowData.parts.HumanoidRootPart
+    local hrp = rd.parts and rd.parts.HumanoidRootPart
     if not hrp then return end
     local camCF = Camera.CFrame
     local dir3 = (hrp.Position - camCF.Position).Unit
@@ -571,268 +459,418 @@ local function drawArrow(plrData, arrowData)
     local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
     local radius = math.min(Camera.ViewportSize.X, Camera.ViewportSize.Y) * 0.4
     local arrowPos = center + dir * radius
-    arrowPos = Vector2.new(math.clamp(arrowPos.X, ESP.ArrowSize, Camera.ViewportSize.X - ESP.ArrowSize),
-                           math.clamp(arrowPos.Y, ESP.ArrowSize, Camera.ViewportSize.Y - ESP.ArrowSize))
+    arrowPos = Vector2.new(math.clamp(arrowPos.X, Config.ESP.ArrowSize, Camera.ViewportSize.X - Config.ESP.ArrowSize),
+                           math.clamp(arrowPos.Y, Config.ESP.ArrowSize, Camera.ViewportSize.Y - Config.ESP.ArrowSize))
     if not plrData.arrow then
-        plrData.arrow = { getFromPool(drawingPool.arrows,"Line"), getFromPool(drawingPool.arrows,"Line"), getFromPool(drawingPool.arrows,"Line") }
+        plrData.arrow = { getFromPool(ESPController.drawingPool.arrows,"Line"), getFromPool(ESPController.drawingPool.arrows,"Line"), getFromPool(ESPController.drawingPool.arrows,"Line") }
         for _, a in pairs(plrData.arrow) do a.Thickness = 2 end
     end
-    local len = ESP.ArrowSize
+    local len = Config.ESP.ArrowSize
     local tip = arrowPos + dir * len
     local perp = Vector2.new(-dir.Y, dir.X) * (len * 0.4)
-    local color = arrowData.priority and ESP.PriorityColor or ESP.ArrowColor
+    local color = rd.priority and Config.ESP.PriorityColor or Config.ESP.ArrowColor
     plrData.arrow[1].From = tip; plrData.arrow[1].To = arrowPos - dir * len
     plrData.arrow[2].From = tip; plrData.arrow[2].To = arrowPos + perp - dir * (len * 0.5)
     plrData.arrow[3].From = tip; plrData.arrow[3].To = arrowPos - perp - dir * (len * 0.5)
     for _, a in pairs(plrData.arrow) do a.Color = color; a.Visible = true end
 end
 
-local function draw2DBox(plrData, parts, arrowData)
-    if arrowData.distance > ESP.MaxDistance or arrowData.distance < ESP.MinDistance or not arrowData.onScreen then
-        if plrData.drawings and plrData.drawings.lines then
-            for _, line in pairs(plrData.drawings.lines) do line.Visible = false end
+-- ===== AIMBOT =====
+local function getClosestPlayerToCursor()
+    local closestPart = nil
+    local shortestDistance = Config.Aimbot.FOVRadius
+    local mousePos = UIS:GetMouseLocation()
+    for plr, data in pairs(ESPController.playersData) do
+        if Config.Aimbot.TeamCheck and isTeammate(plr) then continue end
+        if Config.ESP.HideTeammates and isTeammate(plr) then continue end
+        local parts = data.parts
+        if not parts then continue end
+        local targetPart = parts[Config.Aimbot.TargetPart]
+        local hum = parts.humanoid
+        if not targetPart or not hum or hum.Health <= 0 then continue end
+        local distanceStuds = (Camera.CFrame.Position - targetPart.Position).Magnitude
+        if distanceStuds > Config.ESP.MaxDistance then continue end
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+        if not onScreen then continue end
+        if Config.Aimbot.WallCheck then
+            local origin = Camera.CFrame.Position
+            local direction = targetPart.Position - origin
+            ESPController.aimRayParams.FilterDescendantsInstances = { Camera, LP.Character, parts.Character }
+            local raycastResult = workspace:Raycast(origin, direction, ESPController.aimRayParams)
+            if raycastResult then continue end
         end
-        return
+        local distPixels = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+        if distPixels < shortestDistance then
+            shortestDistance = distPixels
+            closestPart = targetPart
+        end
     end
-    local head = parts.Head
-    local hrp = parts.HumanoidRootPart
-    if not head or not hrp then return end
-    local headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0,0.5,0))
-    local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0,3,0))
-    local height = math.abs(headPos.Y - legPos.Y)
-    if height < 2 then return end
-    local width = height * 0.8
-    local left = arrowData.hrpPos.X - width/2
-    local top = headPos.Y
-    local right = left + width
-    local bottom = top + height
-    local color = getBoxColor(parts._player, arrowData.visible, arrowData.priority)
-    if not plrData.drawings then plrData.drawings = {} end
-    local lines = plrData.drawings.lines
-    if not lines then
-        lines = {}
-        for i=1,4 do lines[i] = getFromPool(drawingPool.lines, "Line") end
-        plrData.drawings.lines = lines
-    end
-    lines[1].From = Vector2.new(left, top); lines[1].To = Vector2.new(right, top)
-    lines[2].From = Vector2.new(right, top); lines[2].To = Vector2.new(right, bottom)
-    lines[3].From = Vector2.new(right, bottom); lines[3].To = Vector2.new(left, bottom)
-    lines[4].From = Vector2.new(left, bottom); lines[4].To = Vector2.new(left, top)
-    for i=1,4 do
-        lines[i].Color = color
-        lines[i].Thickness = arrowData.priority and ESP.BoxThickness+2 or ESP.BoxThickness
-        lines[i].Visible = true
-    end
+    return closestPart
 end
 
-local function drawChams(plrData, visible, priority)
-    if not ESP.Chams then
-        if plrData.highlight then plrData.highlight.Enabled = false end
-        return
-    end
-    if not plrData.highlight then return end
-    plrData.highlight.FillColor = priority and ESP.PriorityColor or (visible and ESP.ChamsVisibleColor or ESP.ChamsOccludedColor)
-    plrData.highlight.FillTransparency = ESP.ChamsTransparency
-    plrData.highlight.Enabled = true
+-- ===== SILENT AIM (упрощённая проверка, без debug.traceback) =====
+local function initSilentAimbot()
+    local gmt = getrawmetatable(game)
+    if not gmt then return end
+    ESPController.oldNamecall = gmt.__namecall
+    ESPController.oldIndex = gmt.__index
+    setreadonly(gmt, false)
+
+    gmt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if Config.Aimbot.SilentEnabled and not ESPController.isUnloaded then
+            -- Проверяем только метод и self, без дорогого traceback
+            if method == "Raycast" and self == workspace then
+                local targetPart = getClosestPlayerToCursor()
+                if targetPart and math.random() <= (Config.Aimbot.HitChance / 100) then
+                    local args = {...}
+                    local origin = args[1]
+                    local newDirection = (targetPart.Position - origin).Unit * 9999
+                    return ESPController.oldNamecall(self, origin, newDirection, args[3])
+                end
+            elseif (method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList") and self == workspace then
+                local targetPart = getClosestPlayerToCursor()
+                if targetPart and math.random() <= (Config.Aimbot.HitChance / 100) then
+                    local args = {...}
+                    local oldRay = args[1]
+                    local newRay = Ray.new(oldRay.Origin, (targetPart.Position - oldRay.Origin).Unit * 9999)
+                    args[1] = newRay
+                    return ESPController.oldNamecall(self, unpack(args))
+                end
+            end
+        end
+        return ESPController.oldNamecall(self, ...)
+    end)
+
+    gmt.__index = newcclosure(function(self, key)
+        if Config.Aimbot.SilentEnabled and not ESPController.isUnloaded and not UIS:GetFocusedTextBox() then
+            if typeof(self) == "Instance" and self:IsA("Mouse") then
+                if key == "Hit" then
+                    local targetPart = getClosestPlayerToCursor()
+                    if targetPart and math.random() <= (Config.Aimbot.HitChance / 100) then
+                        return CFrame.new(targetPart.Position)
+                    end
+                elseif key == "Target" then
+                    local targetPart = getClosestPlayerToCursor()
+                    if targetPart and math.random() <= (Config.Aimbot.HitChance / 100) then
+                        return targetPart
+                    end
+                end
+            end
+        end
+        return ESPController.oldIndex(self, key)
+    end)
+
+    setreadonly(gmt, true)
 end
 
 -- ===== ОСНОВНОЙ РЕНДЕР =====
 local function updateESP()
-    if isUnloaded or not ESP.Enabled then
-        for _, data in pairs(playersData) do hideAll(data) end
+    if ESPController.isUnloaded or not Config.ESP.Enabled then
+        for _, data in pairs(ESPController.playersData) do hideAll(data) end
         return
     end
 
-    for plr, data in pairs(playersData) do
-        local parts = data.parts
-        local hrp = parts and parts.HumanoidRootPart
-        local head = parts and parts.Head
-        local hum = parts and parts.humanoid
-        if hrp and head and hum and hum.Health > 0 and parts.Character.Parent then
-            if ESP.HideTeammates and isTeammate(plr) then
+    local now = os.clock()
+    local fullUpdate = (now - ESPController.lastFullUpdate) >= ESPController.fullUpdateInterval
+    local skeletonUpdate = (now - ESPController.lastSkeletonUpdate) >= ESPController.skeletonInterval
+    local textUpdate = (now - ESPController.lastTextUpdate) >= ESPController.textInterval
+    local arrowUpdate = (now - ESPController.lastArrowUpdate) >= ESPController.arrowInterval
+
+    if fullUpdate then
+        ESPController.lastFullUpdate = now
+        for plr, data in pairs(ESPController.playersData) do
+            local parts = data.parts
+            local hrp = parts and parts.HumanoidRootPart
+            local head = parts and parts.Head
+            local hum = parts and parts.humanoid
+            if not (hrp and head and hum and hum.Health > 0 and parts.Character.Parent) then
                 hideAll(data)
-                goto continue
+                ESPController.renderData[plr] = nil
+                continue
+            end
+            if Config.ESP.HideTeammates and isTeammate(plr) then
+                hideAll(data)
+                ESPController.renderData[plr] = nil
+                continue
             end
             local hrpPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
             if not onScreen then
                 hideAll(data)
-                goto continue
+                ESPController.renderData[plr] = nil
+                continue
             end
             local distance = (Camera.CFrame.Position - hrp.Position).Magnitude
-            if distance > ESP.MaxDistance or distance < ESP.MinDistance then
+            if distance > Config.ESP.MaxDistance or distance < Config.ESP.MinDistance then
                 hideAll(data)
-                goto continue
+                ESPController.renderData[plr] = nil
+                continue
             end
             local visible = false
-            if ESP.VisibleCheck then visible = isVisibleCached(data, head) end
-            local rd = { player = plr, hrpPos = hrpPos, onScreen = onScreen, distance = distance, visible = visible, priority = false, parts = parts }
-            if ESP.PriorityTarget then
-                -- упрощённо: можно вычислить приоритет здесь или в отдельном цикле
-                -- для краткости оставим как есть, но можно доработать
-                rd.priority = renderData[plr] and renderData[plr].priority or false
-            end
-            if ESP.BoxType == "2D" then
-                draw2DBox(data, parts, rd)
-                if data.drawings and data.drawings.corners then for _,c in pairs(data.drawings.corners) do c.Visible = false end end
-            elseif ESP.BoxType == "Corner" then
-                drawCornerBox(data, parts, hrpPos, distance, visible, rd.priority)
-                if data.drawings and data.drawings.lines then for _,l in pairs(data.drawings.lines) do l.Visible = false end end
-            elseif ESP.BoxType == "3D" then
-                draw3DBox(data, parts, visible, rd.priority)
-                if data.drawings then
-                    if data.drawings.lines then for _,l in pairs(data.drawings.lines) do l.Visible = false end end
-                    if data.drawings.corners then for _,c in pairs(data.drawings.corners) do c.Visible = false end end
+            if Config.ESP.VisibleCheck then visible = isVisibleCached(data, head) end
+            local rd = ESPController.renderData[plr] or {}
+            rd.hrpPos = hrpPos
+            rd.onScreen = onScreen
+            rd.distance = distance
+            rd.visible = visible
+            rd.parts = parts
+            ESPController.renderData[plr] = rd
+        end
+
+        if Config.ESP.PriorityTarget then
+            local bestScore = -math.huge
+            local bestPlr = nil
+            local maxDist = Config.ESP.MaxDistance
+            local halfWidth = Camera.ViewportSize.X / 2
+            for plr, rd in pairs(ESPController.renderData) do
+                if rd and rd.onScreen and not (Config.ESP.HideTeammates and isTeammate(plr)) then
+                    local normDist = rd.distance / maxDist
+                    local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+                    local distToCenter = (Vector2.new(rd.hrpPos.X, rd.hrpPos.Y) - screenCenter).Magnitude
+                    local normPixels = distToCenter / halfWidth
+                    local score = (rd.visible and 1 or 0) - normDist - normPixels * 0.5
+                    if score > bestScore then
+                        bestScore = score
+                        bestPlr = plr
+                    end
                 end
             end
-            drawSkeleton(data, parts, rd)
-            drawTexts(data, parts, rd)
-            drawTracer(data, parts, rd)
-            drawArrow(data, rd)
-            drawChams(data, visible, rd.priority)
-        else
-            hideAll(data)
+            for plr, rd in pairs(ESPController.renderData) do
+                if rd then rd.priority = (plr == bestPlr) end
+            end
         end
-        ::continue::
+
+        for plr, rd in pairs(ESPController.renderData) do
+            local data = ESPController.playersData[plr]
+            if data and rd then
+                updateBoxPosition(data, rd.parts, rd)
+            end
+        end
+    end
+
+    if skeletonUpdate then
+        ESPController.lastSkeletonUpdate = now
+        for plr, rd in pairs(ESPController.renderData) do
+            local data = ESPController.playersData[plr]
+            if data and rd then
+                updateSkeletonOptimized(data, rd.parts, rd)
+            end
+        end
+    end
+
+    if textUpdate then
+        ESPController.lastTextUpdate = now
+        for plr, rd in pairs(ESPController.renderData) do
+            local data = ESPController.playersData[plr]
+            if data and rd then
+                updateTextOptimized(data, rd.parts, rd)
+                if Config.ESP.ShowTracer then
+                    if not data.tracer then
+                        data.tracer = getFromPool(ESPController.drawingPool.tracers, "Line")
+                        data.tracer.Thickness = Config.ESP.TracerThickness
+                    end
+                    if rd.onScreen and rd.distance <= Config.ESP.MaxDistance and rd.distance >= Config.ESP.MinDistance then
+                        local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+                        local footPos = Vector2.new(rd.hrpPos.X, rd.hrpPos.Y + 30)
+                        data.tracer.From = screenCenter
+                        data.tracer.To = footPos
+                        data.tracer.Color = rd.priority and Config.ESP.PriorityColor or Config.ESP.TracerColor
+                        data.tracer.Visible = true
+                    else
+                        data.tracer.Visible = false
+                    end
+                end
+            end
+        end
+    end
+
+    if arrowUpdate then
+        ESPController.lastArrowUpdate = now
+        for plr, rd in pairs(ESPController.renderData) do
+            local data = ESPController.playersData[plr]
+            if data and rd then
+                updateArrowOptimized(data, rd)
+            end
+        end
     end
 end
 
 -- ===== FPS СЧЁТЧИК =====
 local function createFPSDisplay()
-    if fpsLabel then return end
+    if ESPController.fpsLabel then return end
     local gui = Instance.new("ScreenGui")
     gui.Name = "FPSDisplay"
     gui.ResetOnSpawn = false
     gui.Parent = LP:WaitForChild("PlayerGui")
-    fpsLabel = Instance.new("TextLabel", gui)
-    fpsLabel.Size = UDim2.new(0,100,0,20)
-    fpsLabel.Position = UDim2.new(1,-110,0,10)
-    fpsLabel.BackgroundTransparency = 1
-    fpsLabel.TextColor3 = Color3.fromRGB(255,255,255)
-    fpsLabel.TextStrokeTransparency = 0.5
-    fpsLabel.Font = Enum.Font.SourceSansBold
-    fpsLabel.TextSize = 12
-    drawCountLabel = Instance.new("TextLabel", gui)
-    drawCountLabel.Size = UDim2.new(0,100,0,20)
-    drawCountLabel.Position = UDim2.new(1,-110,0,30)
-    drawCountLabel.BackgroundTransparency = 1
-    drawCountLabel.TextColor3 = Color3.fromRGB(200,200,200)
-    drawCountLabel.Font = Enum.Font.SourceSans
-    drawCountLabel.TextSize = 10
+    ESPController.fpsLabel = Instance.new("TextLabel", gui)
+    ESPController.fpsLabel.Size = UDim2.new(0,100,0,20)
+    ESPController.fpsLabel.Position = UDim2.new(1,-110,0,10)
+    ESPController.fpsLabel.BackgroundTransparency = 1
+    ESPController.fpsLabel.TextColor3 = Color3.fromRGB(255,255,255)
+    ESPController.fpsLabel.TextStrokeTransparency = 0.5
+    ESPController.fpsLabel.Font = Enum.Font.SourceSansBold
+    ESPController.fpsLabel.TextSize = 12
+    ESPController.drawCountLabel = Instance.new("TextLabel", gui)
+    ESPController.drawCountLabel.Size = UDim2.new(0,100,0,20)
+    ESPController.drawCountLabel.Position = UDim2.new(1,-110,0,30)
+    ESPController.drawCountLabel.BackgroundTransparency = 1
+    ESPController.drawCountLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    ESPController.drawCountLabel.Font = Enum.Font.SourceSans
+    ESPController.drawCountLabel.TextSize = 10
 end
 
-local function updateFPSDisplay()
-    if not ESP.ShowFPS then
-        if fpsLabel then fpsLabel.Visible = false end
-        if drawCountLabel then drawCountLabel.Visible = false end
+local function updateFPSDisplay(dt)
+    if not Config.ESP.ShowFPS then
+        if ESPController.fpsLabel then ESPController.fpsLabel.Visible = false end
+        if ESPController.drawCountLabel then ESPController.drawCountLabel.Visible = false end
         return
     end
-    if not fpsLabel then createFPSDisplay() end
-    fpsLabel.Visible = true
-    drawCountLabel.Visible = true
+    if not ESPController.fpsLabel then createFPSDisplay() end
+    ESPController.fpsLabel.Visible = true
+    ESPController.drawCountLabel.Visible = true
+    local instantFPS = 1 / dt
+    ESPController.fpsSum = ESPController.fpsSum + instantFPS
+    ESPController.fpsCount = ESPController.fpsCount + 1
+    if ESPController.fpsCount >= 30 then
+        ESPController.currentFPS = ESPController.fpsSum / ESPController.fpsCount
+        ESPController.fpsSum = 0
+        ESPController.fpsCount = 0
+    end
     local totalDrawings = 0
-    for _, pool in pairs(drawingPool) do totalDrawings = totalDrawings + #pool end
-    fpsLabel.Text = string.format("FPS: %d", currentFPS)
-    drawCountLabel.Text = string.format("Draw: %d", totalDrawings)
+    for _, pool in pairs(ESPController.drawingPool) do totalDrawings = totalDrawings + #pool end
+    ESPController.fpsLabel.Text = string.format("FPS: %.1f", ESPController.currentFPS)
+    ESPController.drawCountLabel.Text = string.format("Draw: %d", totalDrawings)
 end
 
--- ===== КАМЕРНЫЙ АИМБОТ И FOV =====
-local function isAimbotKeyPressed()
-    local key = ESP.AimbotKey
-    if not key then return false end
-    if key.EnumType == Enum.UserInputType then
-        return UIS:IsMouseButtonPressed(key)
-    elseif key.EnumType == Enum.KeyCode then
-        return UIS:IsKeyDown(key)
-    end
-    return false
-end
-
+-- ===== КАМЕРНЫЙ АИМБОТ =====
 local function updateAimbotLoop()
-    if isUnloaded then return end
-    if fovCircle then
-        fovCircle.Position = UIS:GetMouseLocation()
-        fovCircle.Radius = ESP.FOVRadius
-        fovCircle.Color = ESP.FOVColor
-        fovCircle.Thickness = ESP.FOVThickness
-        fovCircle.Filled = ESP.FilledFOV
-        fovCircle.Transparency = ESP.FOVTransparency
-        fovCircle.Visible = ESP.ShowFOV and (ESP.CameraEnabled or ESP.SilentEnabled)
+    if ESPController.isUnloaded then return end
+    local fov = ESPController.fovCircle
+    if fov then
+        fov.Position = UIS:GetMouseLocation()
+        fov.Radius = Config.Aimbot.FOVRadius
+        fov.Color = Config.Aimbot.FOVColor
+        fov.Thickness = Config.Aimbot.FOVThickness
+        fov.Filled = Config.Aimbot.FilledFOV
+        fov.Transparency = Config.Aimbot.FOVTransparency
+        fov.Visible = Config.Aimbot.ShowFOV and (Config.Aimbot.CameraEnabled or Config.Aimbot.SilentEnabled)
     end
-    if ESP.CameraEnabled and not UIS:GetFocusedTextBox() then
-        if isAimbotKeyPressed() then
+    if Config.Aimbot.CameraEnabled and not UIS:GetFocusedTextBox() then
+        local key = Config.Aimbot.AimbotKey
+        local pressed = false
+        if key then
+            if key.EnumType == Enum.UserInputType then pressed = UIS:IsMouseButtonPressed(key)
+            elseif key.EnumType == Enum.KeyCode then pressed = UIS:IsKeyDown(key) end
+        end
+        if pressed then
             local targetPart = getClosestPlayerToCursor()
             if targetPart then
-                local lookAt = CFrame.new(Camera.CFrame.Position, targetPart.Position)
-                Camera.CFrame = Camera.CFrame:Lerp(lookAt, ESP.Smoothness)
+                local current = Camera.CFrame
+                local target = CFrame.new(current.Position, targetPart.Position)
+                Camera.CFrame = current:Lerp(target, Config.Aimbot.Smoothness)
             end
         end
     end
 end
 
--- ===== ЦИКЛЫ =====
-local function onHeartbeat()
-    if isUnloaded then return end
-    local now = os.clock()
-    if now - lastHeartbeat >= heartbeatInterval then
-        lastHeartbeat = now
-        -- Здесь можно обновлять приоритет целей, но для простоты оставим
+-- ===== SETUP PLAYER =====
+local function setupPlayer(plr)
+    if plr == LP then return end
+    local oldData = ESPController.playersData[plr]
+    if oldData then hideAll(oldData) end
+    if ESPController.connections[plr] then
+        for _, conn in pairs(ESPController.connections[plr]) do if conn then conn:Disconnect() end end
     end
-end
+    ESPController.playersData[plr] = {
+        parts = {},
+        drawings = nil,
+        skeletonLines = nil,
+        texts = nil,
+        tracer = nil,
+        adornment = nil,
+        arrow = nil,
+        highlight = nil,
+        visible = false,
+        lastVisibleUpdate = 0,
+    }
+    ESPController.renderData[plr] = nil
+    ESPController.connections[plr] = {}
 
-local function onRender(dt)
-    if isUnloaded then return end
-    fpsIndex = fpsIndex % 30 + 1
-    fpsRing[fpsIndex] = tick()
-    if fpsIndex == 30 then
-        local oldest = fpsRing[1]
-        if oldest then currentFPS = math.floor(30 / (tick() - oldest)) end
-    end
-    if ESP.ShowFPS then updateFPSDisplay() end
-    updateAimbotLoop()
-    updateESP()
+    local charAddedConn = plr.CharacterAdded:Connect(function(char)
+        task.spawn(function()
+            if LP.Character then ESPController.rayParams.FilterDescendantsInstances = { LP.Character, Camera } end
+            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+            local head = char:WaitForChild("Head", 5)
+            if hrp and head and char.Parent then
+                cachePlayerParts(plr, char)
+                local data = ESPController.playersData[plr]
+                if data then
+                    if data.highlight then safeDestroy(data.highlight); data.highlight = nil end
+                    if Config.ESP.Chams then
+                        local hl = Instance.new("Highlight")
+                        hl.Name = "GlupostESPHighlight"
+                        hl.FillColor = Config.ESP.ChamsVisibleColor
+                        hl.OutlineColor = Config.ESP.ChamsOccludedColor
+                        hl.FillTransparency = Config.ESP.ChamsTransparency
+                        hl.Parent = char
+                        data.highlight = hl
+                    end
+                end
+            end
+        end)
+    end)
+    local charRemovingConn = plr.CharacterRemoving:Connect(function()
+        if ESPController.playersData[plr] then hideAll(ESPController.playersData[plr]) end
+    end)
+    ESPController.connections[plr].CharacterAdded = charAddedConn
+    ESPController.connections[plr].CharacterRemoving = charRemovingConn
+    if plr.Character then cachePlayerParts(plr, plr.Character) end
 end
 
 -- ===== ИНИЦИАЛИЗАЦИЯ И ВЫГРУЗКА =====
 local function initESP()
     for _, player in ipairs(Players:GetPlayers()) do setupPlayer(player) end
-    playerAddedConn = Players.PlayerAdded:Connect(setupPlayer)
-    playerRemovingConn = Players.PlayerRemoving:Connect(function(player)
-        if playersData[player] then destroyAll(playersData[player]); playersData[player] = nil end
-        if connections[player] then
-            for _, conn in pairs(connections[player]) do if conn then conn:Disconnect() end end
-            connections[player] = nil
+    ESPController.playerAddedConn = Players.PlayerAdded:Connect(setupPlayer)
+    ESPController.playerRemovingConn = Players.PlayerRemoving:Connect(function(player)
+        if ESPController.playersData[player] then
+            destroyAll(ESPController.playersData[player])
+            ESPController.playersData[player] = nil
         end
-        renderData[player] = nil
+        if ESPController.connections[player] then
+            for _, conn in pairs(ESPController.connections[player]) do if conn then conn:Disconnect() end end
+            ESPController.connections[player] = nil
+        end
+        ESPController.renderData[player] = nil
     end)
 end
 
 local function unloadHub()
-    if isUnloaded then return end
-    isUnloaded = true
-    if playerAddedConn then playerAddedConn:Disconnect() end
-    if playerRemovingConn then playerRemovingConn:Disconnect() end
-    if renderSteppedConn then renderSteppedConn:Disconnect() end
-    if heartbeatConn then heartbeatConn:Disconnect() end
-    if hotkeyConn then hotkeyConn:Disconnect() end
-    for plr, userConns in pairs(connections) do
+    if ESPController.isUnloaded then return end
+    ESPController.isUnloaded = true
+    if ESPController.playerAddedConn then ESPController.playerAddedConn:Disconnect() end
+    if ESPController.playerRemovingConn then ESPController.playerRemovingConn:Disconnect() end
+    if ESPController.renderSteppedConn then ESPController.renderSteppedConn:Disconnect() end
+    if ESPController.heartbeatConn then ESPController.heartbeatConn:Disconnect() end
+    if ESPController.hotkeyConn then ESPController.hotkeyConn:Disconnect() end
+    for plr, userConns in pairs(ESPController.connections) do
         for _, conn in pairs(userConns) do if conn then conn:Disconnect() end end
     end
-    table.clear(connections)
-    for plr, data in pairs(playersData) do destroyAll(data) end
-    table.clear(playersData)
-    table.clear(renderData)
-    for _, pool in pairs(drawingPool) do
+    table.clear(ESPController.connections)
+    for plr, data in pairs(ESPController.playersData) do destroyAll(data) end
+    table.clear(ESPController.playersData)
+    table.clear(ESPController.renderData)
+    for _, pool in pairs(ESPController.drawingPool) do
         for _, obj in ipairs(pool) do safeDestroy(obj) end
         table.clear(pool)
     end
-    if fovCircle then fovCircle:Remove() end
-    if fpsLabel then fpsLabel.Visible = false end
-    if drawCountLabel then drawCountLabel.Visible = false end
+    pcall(function() ESPController.fovCircle:Remove() end)
+    if ESPController.fpsLabel then ESPController.fpsLabel.Visible = false end
+    if ESPController.drawCountLabel then ESPController.drawCountLabel.Visible = false end
     local gmt = getrawmetatable(game)
-    if gmt and oldNamecall and oldIndex then
+    if gmt and ESPController.oldNamecall and ESPController.oldIndex then
         setreadonly(gmt, false)
-        gmt.__namecall = oldNamecall
-        gmt.__index = oldIndex
+        gmt.__namecall = ESPController.oldNamecall
+        gmt.__index = ESPController.oldIndex
         setreadonly(gmt, true)
     end
     Library:Unload()
@@ -840,31 +878,28 @@ end
 
 -- ===== ГОРЯЧИЕ КЛАВИШИ =====
 local function setupHotkeys()
-    hotkeyConn = UIS.InputBegan:Connect(function(input,gp)
+    ESPController.hotkeyConn = UIS.InputBegan:Connect(function(input,gp)
         if gp then return end
         if input.KeyCode == Enum.KeyCode.F1 then
-            ESP.Enabled = not ESP.Enabled
-            if Options.ESPEnabled then Options.ESPEnabled:SetValue(ESP.Enabled) end
-            print("ESP toggled:", ESP.Enabled)
+            Config.ESP.Enabled = not Config.ESP.Enabled
+            if Options.ESPEnabled then Options.ESPEnabled:SetValue(Config.ESP.Enabled) end
         elseif input.KeyCode == Enum.KeyCode.F2 then
             local types = {"2D","3D","Corner"}
-            local idx = table.find(types, ESP.BoxType) or 1
+            local idx = table.find(types, Config.ESP.BoxType) or 1
             idx = idx % 3 + 1
-            ESP.BoxType = types[idx]
-            if Options.BoxType then Options.BoxType:SetValue(ESP.BoxType) end
-            print("Box type changed to:", ESP.BoxType)
+            Config.ESP.BoxType = types[idx]
+            if Options.BoxType then Options.BoxType:SetValue(Config.ESP.BoxType) end
         elseif input.KeyCode == Enum.KeyCode.F3 then
-            ESP.Skeleton = not ESP.Skeleton
-            if Options.SkeletonEnabled then Options.SkeletonEnabled:SetValue(ESP.Skeleton) end
-            print("Skeleton toggled:", ESP.Skeleton)
+            Config.ESP.Skeleton = not Config.ESP.Skeleton
+            if Options.SkeletonEnabled then Options.SkeletonEnabled:SetValue(Config.ESP.Skeleton) end
         end
     end)
 end
 
--- ===== GUI =====
+-- ===== GUI (с безопасной установкой опций) =====
 local Window = Library:CreateWindow({
     Title = "glupost hub",
-    Footer = "v11.0",
+    Footer = "v13.2",
     NotifySide = "Right",
     ShowCustomCursor = true,
 })
@@ -879,81 +914,84 @@ local Tabs = {
 local Options = Library.Options
 
 local mainLeft = Tabs.Main:AddLeftGroupbox("General")
-mainLeft:AddToggle("ESPEnabled", { Text = "Enable ESP", Default = true, Callback = function(v) ESP.Enabled = v end })
-mainLeft:AddDropdown("BoxType", { Text = "Box Type", Values = {"2D","3D","Corner"}, Default = "2D", Callback = function(v) ESP.BoxType = v end })
-mainLeft:AddSlider("MaxDistance", { Text = "Max Distance", Default = 500, Min = 50, Max = 2000, Rounding = 0, Callback = function(v) ESP.MaxDistance = v end })
-mainLeft:AddSlider("MinDistance", { Text = "Min Distance", Default = 0, Min = 0, Max = 200, Rounding = 0, Callback = function(v) ESP.MinDistance = v end })
-mainLeft:AddToggle("HideTeammates", { Text = "Hide Teammates", Default = false, Callback = function(v) ESP.HideTeammates = v end })
-mainLeft:AddToggle("ShowFPS", { Text = "Show FPS Counter", Default = false, Callback = function(v) ESP.ShowFPS = v end })
-mainLeft:AddToggle("VisibleCheck", { Text = "Visible Check", Default = true, Callback = function(v) ESP.VisibleCheck = v end })
+mainLeft:AddToggle("ESPEnabled", { Text = "Enable ESP", Default = true, Callback = function(v) Config.ESP.Enabled = v end })
+mainLeft:AddDropdown("BoxType", { Text = "Box Type", Values = {"2D","3D","Corner"}, Default = "2D", Callback = function(v) Config.ESP.BoxType = v end })
+mainLeft:AddSlider("MaxDistance", { Text = "Max Distance", Default = 500, Min = 50, Max = 2000, Rounding = 0, Callback = function(v) Config.ESP.MaxDistance = v end })
+mainLeft:AddSlider("MinDistance", { Text = "Min Distance", Default = 0, Min = 0, Max = 200, Rounding = 0, Callback = function(v) Config.ESP.MinDistance = v end })
+mainLeft:AddToggle("HideTeammates", { Text = "Hide Teammates", Default = false, Callback = function(v) Config.ESP.HideTeammates = v end })
+mainLeft:AddToggle("ShowFPS", { Text = "Show FPS Counter", Default = false, Callback = function(v) Config.ESP.ShowFPS = v end })
+mainLeft:AddToggle("VisibleCheck", { Text = "Visible Check", Default = true, Callback = function(v) Config.ESP.VisibleCheck = v end })
 local teamGroup = Tabs.Main:AddRightGroupbox("Team Colors")
-teamGroup:AddColorPicker("EnemyColor", { Text = "Enemy Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) ESP.EnemyColor = c end })
-teamGroup:AddColorPicker("AllyColor", { Text = "Ally Color", Default = Color3.fromRGB(0,255,0), Callback = function(c) ESP.AllyColor = c end })
+teamGroup:AddColorPicker("EnemyColor", { Text = "Enemy Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) Config.ESP.EnemyColor = c end })
+teamGroup:AddColorPicker("AllyColor", { Text = "Ally Color", Default = Color3.fromRGB(0,255,0), Callback = function(c) Config.ESP.AllyColor = c end })
 teamGroup:AddLabel("Note: Visible Check overrides Team Colors when enabled")
 
 local aimLeft = Tabs.Aimbot:AddLeftGroupbox("Aimbot Settings")
-aimLeft:AddToggle("CameraEnabled", { Text = "Camera Aimbot", Default = false, Callback = function(v) ESP.CameraEnabled = v end })
-aimLeft:AddToggle("SilentEnabled", { Text = "Silent Aimbot", Default = false, Callback = function(v) ESP.SilentEnabled = v end })
-aimLeft:AddDropdown("TargetPart", { Text = "Target Part", Values = {"Head","Torso","HumanoidRootPart"}, Default = "Head", Callback = function(v) ESP.TargetPart = v end })
-aimLeft:AddToggle("TeamCheck", { Text = "Ignore Teammates", Default = true, Callback = function(v) ESP.TeamCheck = v end })
-aimLeft:AddToggle("WallCheck", { Text = "Wall Check", Default = true, Callback = function(v) ESP.WallCheck = v end })
-aimLeft:AddSlider("Smoothness", { Text = "Smoothness (Camera)", Default = 0.3, Min = 0.05, Max = 1, Rounding = 0.01, Callback = function(v) ESP.Smoothness = v end })
-aimLeft:AddSlider("HitChance", { Text = "Hit Chance % (Silent)", Default = 100, Min = 0, Max = 100, Rounding = 0, Callback = function(v) ESP.HitChance = v end })
+aimLeft:AddToggle("CameraEnabled", { Text = "Camera Aimbot", Default = false, Callback = function(v) Config.Aimbot.CameraEnabled = v end })
+aimLeft:AddToggle("SilentEnabled", { Text = "Silent Aimbot", Default = false, Callback = function(v) Config.Aimbot.SilentEnabled = v end })
+aimLeft:AddDropdown("TargetPart", { Text = "Target Part", Values = {"Head","Torso","HumanoidRootPart"}, Default = "Head", Callback = function(v) Config.Aimbot.TargetPart = v end })
+aimLeft:AddToggle("TeamCheck", { Text = "Ignore Teammates", Default = true, Callback = function(v) Config.Aimbot.TeamCheck = v end })
+aimLeft:AddToggle("WallCheck", { Text = "Wall Check", Default = true, Callback = function(v) Config.Aimbot.WallCheck = v end })
+aimLeft:AddSlider("Smoothness", { Text = "Smoothness (Camera)", Default = 0.3, Min = 0.05, Max = 1, Rounding = 0.01, Callback = function(v) Config.Aimbot.Smoothness = v end })
+aimLeft:AddSlider("HitChance", { Text = "Hit Chance % (Silent)", Default = 100, Min = 0, Max = 100, Rounding = 0, Callback = function(v) Config.Aimbot.HitChance = v end })
 aimLeft:AddKeybind("AimbotKeybind", {
     Text = "Aimbot Key",
     Default = "MouseButton2",
     Mode = "Hold",
-    Callback = function(Value) ESP.AimbotKey = Value end,
-    ChangedCallback = function(NewKey) ESP.AimbotKey = NewKey end,
+    Callback = function(v) Config.Aimbot.AimbotKey = v end,
+    ChangedCallback = function(v) Config.Aimbot.AimbotKey = v end,
 })
 local aimRight = Tabs.Aimbot:AddRightGroupbox("FOV Circle")
-aimRight:AddToggle("ShowFOV", { Text = "Show FOV Circle", Default = false, Callback = function(v) ESP.ShowFOV = v end })
-aimRight:AddSlider("FOVRadius", { Text = "Radius (pixels)", Default = 150, Min = 30, Max = 500, Rounding = 0, Callback = function(v) ESP.FOVRadius = v end })
-aimRight:AddColorPicker("FOVColor", { Text = "Circle Color", Default = Color3.fromRGB(255,255,255), Callback = function(c) ESP.FOVColor = c end })
-aimRight:AddSlider("FOVThickness", { Text = "Thickness", Default = 2, Min = 1, Max = 5, Rounding = 0, Callback = function(v) ESP.FOVThickness = v end })
-aimRight:AddToggle("FilledFOV", { Text = "Filled", Default = false, Callback = function(v) ESP.FilledFOV = v end })
-aimRight:AddSlider("FOVTransparency", { Text = "Fill Transparency", Default = 0.3, Min = 0, Max = 1, Rounding = 0.05, Callback = function(v) ESP.FOVTransparency = v end })
+aimRight:AddToggle("ShowFOV", { Text = "Show FOV Circle", Default = false, Callback = function(v) Config.Aimbot.ShowFOV = v end })
+aimRight:AddSlider("FOVRadius", { Text = "Radius (pixels)", Default = 150, Min = 30, Max = 500, Rounding = 0, Callback = function(v) Config.Aimbot.FOVRadius = v end })
+aimRight:AddColorPicker("FOVColor", { Text = "Circle Color", Default = Color3.fromRGB(255,255,255), Callback = function(c) Config.Aimbot.FOVColor = c end })
+aimRight:AddSlider("FOVThickness", { Text = "Thickness", Default = 2, Min = 1, Max = 5, Rounding = 0, Callback = function(v) Config.Aimbot.FOVThickness = v end })
+aimRight:AddToggle("FilledFOV", { Text = "Filled", Default = false, Callback = function(v) Config.Aimbot.FilledFOV = v end })
+aimRight:AddSlider("FOVTransparency", { Text = "Fill Transparency", Default = 0.3, Min = 0, Max = 1, Rounding = 0.05, Callback = function(v) Config.Aimbot.FOVTransparency = v end })
 
 local profileGroup = Tabs.Profiles:AddLeftGroupbox("Quick Presets")
+local function safeSetOption(optName, value)
+    if Options[optName] then Options[optName]:SetValue(value) end
+end
 profileGroup:AddButton("Competitive", function()
-    ESP.MaxDistance = 300; ESP.MinDistance = 10; ESP.Skeleton = true; ESP.ShowTracer = true; ESP.VisibleCheck = true; ESP.BoxThickness = 2; ESP.BoxType = "2D"
-    Options.MaxDistance:SetValue(300); Options.MinDistance:SetValue(10); Options.SkeletonEnabled:SetValue(true); Options.ShowTracer:SetValue(true); Options.VisibleCheck:SetValue(true); Options.BoxThickness:SetValue(2); Options.BoxType:SetValue("2D")
+    Config.ESP.MaxDistance = 300; Config.ESP.MinDistance = 10; Config.ESP.Skeleton = true; Config.ESP.ShowTracer = true; Config.ESP.VisibleCheck = true; Config.ESP.BoxThickness = 2; Config.ESP.BoxType = "2D"
+    safeSetOption("MaxDistance", 300); safeSetOption("MinDistance", 10); safeSetOption("SkeletonEnabled", true); safeSetOption("ShowTracer", true); safeSetOption("VisibleCheck", true); safeSetOption("BoxThickness", 2); safeSetOption("BoxType", "2D")
 end)
 profileGroup:AddButton("Performance", function()
-    ESP.MaxDistance = 200; ESP.MinDistance = 0; ESP.Skeleton = false; ESP.ShowTracer = false; ESP.VisibleCheck = false; ESP.BoxThickness = 1; ESP.BoxType = "2D"; ESP.ShowName = false; ESP.ShowHealth = false; ESP.ShowDistance = false
-    Options.MaxDistance:SetValue(200); Options.MinDistance:SetValue(0); Options.SkeletonEnabled:SetValue(false); Options.ShowTracer:SetValue(false); Options.VisibleCheck:SetValue(false); Options.BoxThickness:SetValue(1); Options.BoxType:SetValue("2D"); Options.ShowName:SetValue(false); Options.ShowHealth:SetValue(false); Options.ShowDistance:SetValue(false)
+    Config.ESP.MaxDistance = 200; Config.ESP.MinDistance = 0; Config.ESP.Skeleton = false; Config.ESP.ShowTracer = false; Config.ESP.VisibleCheck = false; Config.ESP.BoxThickness = 1; Config.ESP.BoxType = "2D"; Config.ESP.ShowName = false; Config.ESP.ShowHealth = false; Config.ESP.ShowDistance = false
+    safeSetOption("MaxDistance", 200); safeSetOption("MinDistance", 0); safeSetOption("SkeletonEnabled", false); safeSetOption("ShowTracer", false); safeSetOption("VisibleCheck", false); safeSetOption("BoxThickness", 1); safeSetOption("BoxType", "2D"); safeSetOption("ShowName", false); safeSetOption("ShowHealth", false); safeSetOption("ShowDistance", false)
 end)
 profileGroup:AddButton("Max Distance", function()
-    ESP.MaxDistance = 2000; ESP.MinDistance = 0; ESP.Skeleton = true; ESP.ShowTracer = true; ESP.VisibleCheck = true; ESP.BoxThickness = 3
-    Options.MaxDistance:SetValue(2000); Options.MinDistance:SetValue(0); Options.SkeletonEnabled:SetValue(true); Options.ShowTracer:SetValue(true); Options.VisibleCheck:SetValue(true); Options.BoxThickness:SetValue(3)
+    Config.ESP.MaxDistance = 2000; Config.ESP.MinDistance = 0; Config.ESP.Skeleton = true; Config.ESP.ShowTracer = true; Config.ESP.VisibleCheck = true; Config.ESP.BoxThickness = 3
+    safeSetOption("MaxDistance", 2000); safeSetOption("MinDistance", 0); safeSetOption("SkeletonEnabled", true); safeSetOption("ShowTracer", true); safeSetOption("VisibleCheck", true); safeSetOption("BoxThickness", 3)
 end)
 
 local visualLeft = Tabs.Visuals:AddLeftGroupbox("Skeleton & Tracers")
-visualLeft:AddToggle("SkeletonEnabled", { Text = "Show Skeleton", Default = false, Callback = function(v) ESP.Skeleton = v end })
-visualLeft:AddToggle("ShowTracer", { Text = "Show Tracer", Default = false, Callback = function(v) ESP.ShowTracer = v end })
-visualLeft:AddColorPicker("SkeletonColor", { Text = "Skeleton Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) ESP.SkeletonColor = c end })
-visualLeft:AddSlider("SkeletonThickness", { Text = "Skeleton Thickness", Default = 2, Min = 1, Max = 5, Rounding = 0, Callback = function(v) ESP.SkeletonThickness = v end })
-visualLeft:AddColorPicker("TracerColor", { Text = "Tracer Color", Default = Color3.fromRGB(255,255,255), Callback = function(c) ESP.TracerColor = c end })
-visualLeft:AddSlider("TracerThickness", { Text = "Tracer Thickness", Default = 1, Min = 1, Max = 4, Rounding = 0, Callback = function(v) ESP.TracerThickness = v end })
+visualLeft:AddToggle("SkeletonEnabled", { Text = "Show Skeleton", Default = false, Callback = function(v) Config.ESP.Skeleton = v end })
+visualLeft:AddToggle("ShowTracer", { Text = "Show Tracer", Default = false, Callback = function(v) Config.ESP.ShowTracer = v end })
+visualLeft:AddColorPicker("SkeletonColor", { Text = "Skeleton Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) Config.ESP.SkeletonColor = c end })
+visualLeft:AddSlider("SkeletonThickness", { Text = "Skeleton Thickness", Default = 2, Min = 1, Max = 5, Rounding = 0, Callback = function(v) Config.ESP.SkeletonThickness = v end })
+visualLeft:AddColorPicker("TracerColor", { Text = "Tracer Color", Default = Color3.fromRGB(255,255,255), Callback = function(c) Config.ESP.TracerColor = c end })
+visualLeft:AddSlider("TracerThickness", { Text = "Tracer Thickness", Default = 1, Min = 1, Max = 4, Rounding = 0, Callback = function(v) Config.ESP.TracerThickness = v end })
 local visualRight = Tabs.Visuals:AddRightGroupbox("Chams & Text")
 visualRight:AddToggle("Chams", { Text = "Enable Chams", Default = false, Callback = function(v)
-    ESP.Chams = v
-    for plr, data in pairs(playersData) do
+    Config.ESP.Chams = v
+    for plr, data in pairs(ESPController.playersData) do
         local char = plr.Character
         if char then
             if v then
                 if data.highlight and data.highlight.Parent == char then
-                    data.highlight.FillColor = ESP.ChamsVisibleColor
-                    data.highlight.OutlineColor = ESP.ChamsOccludedColor
-                    data.highlight.FillTransparency = ESP.ChamsTransparency
+                    data.highlight.FillColor = Config.ESP.ChamsVisibleColor
+                    data.highlight.OutlineColor = Config.ESP.ChamsOccludedColor
+                    data.highlight.FillTransparency = Config.ESP.ChamsTransparency
                     data.highlight.Enabled = true
                 else
                     if data.highlight then safeDestroy(data.highlight) end
                     local hl = Instance.new("Highlight")
                     hl.Name = "GlupostESPHighlight"
-                    hl.FillColor = ESP.ChamsVisibleColor
-                    hl.OutlineColor = ESP.ChamsOccludedColor
-                    hl.FillTransparency = ESP.ChamsTransparency
+                    hl.FillColor = Config.ESP.ChamsVisibleColor
+                    hl.OutlineColor = Config.ESP.ChamsOccludedColor
+                    hl.FillTransparency = Config.ESP.ChamsTransparency
                     hl.Parent = char
                     data.highlight = hl
                 end
@@ -963,12 +1001,12 @@ visualRight:AddToggle("Chams", { Text = "Enable Chams", Default = false, Callbac
         end
     end
 end })
-visualRight:AddColorPicker("ChamsVisibleColor", { Text = "Visible Chams Color", Default = Color3.fromRGB(0,255,0), Callback = function(c) ESP.ChamsVisibleColor = c; if ESP.Chams then for _, data in pairs(playersData) do if data.highlight then data.highlight.FillColor = c end end end })
-visualRight:AddColorPicker("ChamsOccludedColor", { Text = "Occluded Chams Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) ESP.ChamsOccludedColor = c; if ESP.Chams then for _, data in pairs(playersData) do if data.highlight then data.highlight.OutlineColor = c end end end })
-visualRight:AddSlider("ChamsTransparency", { Text = "Chams Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 0.05, Callback = function(v) ESP.ChamsTransparency = v; if ESP.Chams then for _, data in pairs(playersData) do if data.highlight then data.highlight.FillTransparency = v end end end })
-visualRight:AddToggle("ShowName", { Text = "Show Name", Default = true, Callback = function(v) ESP.ShowName = v end })
-visualRight:AddToggle("ShowHealth", { Text = "Show Health", Default = true, Callback = function(v) ESP.ShowHealth = v end })
-visualRight:AddToggle("ShowDistance", { Text = "Show Distance", Default = true, Callback = function(v) ESP.ShowDistance = v end })
+visualRight:AddColorPicker("ChamsVisibleColor", { Text = "Visible Chams Color", Default = Color3.fromRGB(0,255,0), Callback = function(c) Config.ESP.ChamsVisibleColor = c; if Config.ESP.Chams then for _, data in pairs(ESPController.playersData) do if data.highlight then data.highlight.FillColor = c end end end })
+visualRight:AddColorPicker("ChamsOccludedColor", { Text = "Occluded Chams Color", Default = Color3.fromRGB(255,0,0), Callback = function(c) Config.ESP.ChamsOccludedColor = c; if Config.ESP.Chams then for _, data in pairs(ESPController.playersData) do if data.highlight then data.highlight.OutlineColor = c end end end })
+visualRight:AddSlider("ChamsTransparency", { Text = "Chams Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 0.05, Callback = function(v) Config.ESP.ChamsTransparency = v; if Config.ESP.Chams then for _, data in pairs(ESPController.playersData) do if data.highlight then data.highlight.FillTransparency = v end end end })
+visualRight:AddToggle("ShowName", { Text = "Show Name", Default = true, Callback = function(v) Config.ESP.ShowName = v end })
+visualRight:AddToggle("ShowHealth", { Text = "Show Health", Default = true, Callback = function(v) Config.ESP.ShowHealth = v end })
+visualRight:AddToggle("ShowDistance", { Text = "Show Distance", Default = true, Callback = function(v) Config.ESP.ShowDistance = v end })
 
 local uiGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
 uiGroup:AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
@@ -986,9 +1024,16 @@ SaveManager:LoadAutoloadConfig()
 Library.ToggleKeybind = Options.MenuKeybind.Value
 
 initESP()
-renderSteppedConn = RunService.RenderStepped:Connect(onRender)
-heartbeatConn = RunService.Heartbeat:Connect(onHeartbeat)
+ESPController.renderSteppedConn = RunService.RenderStepped:Connect(function(dt)
+    if ESPController.isUnloaded then return end
+    updateFPSDisplay(dt)
+    updateAimbotLoop()
+    updateESP()
+end)
+ESPController.heartbeatConn = RunService.Heartbeat:Connect(function()
+    -- пусто, оставлено для совместимости, можно удалить, но оставим как заглушку
+end)
 setupHotkeys()
 initSilentAimbot()
 
-print("glupost hub v11.0 loaded. Press RightShift to open menu. Hotkeys: F1 (ESP), F2 (Box), F3 (Skeleton).")
+print("glupost hub v13.2 loaded. Press RightShift to open menu. Hotkeys: F1 (ESP), F2 (Box), F3 (Skeleton).")
