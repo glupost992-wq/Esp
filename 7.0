@@ -1,14 +1,4 @@
--- glupost hub v16.3 FINAL (абсолютно полный скрипт)
--- Все функции на месте, ничего не сокращено.
--- Исправлены:
--- 1. VisibleCheck в ThreatScore теперь учитывает попадание в части тела той же цели.
--- 2. Проверка на существование Head в calculateThreatScore.
--- 3. Защита от деления на 0 при maxHealth == 0.
--- 4. Объявлена lastPredictionUpdate.
--- Также все исправления v16.2: threatScoreCache, recoilConn, порядок кадров RCS, LRU паттернов,
--- Prediction защита от dt ~ 0, единый DynamicFOV, KillAura с WallCheck, корректный Spinbot (AlignOrientation),
--- очистка predictionCache при CharacterRemoving.
-
+-- glupost hub v16.3 FINAL (Исправленная и оптимизированная версия)
 if getgenv().GlupostHubLoaded then return end
 getgenv().GlupostHubLoaded = true
 
@@ -103,7 +93,7 @@ local LegitConfig = {
 }
 
 local RageConfig = {
-    ESP = {}, -- клонируется при активации
+    ESP = {}, 
     Aimbot = {
         Enabled = true,
         CameraEnabled = true,
@@ -224,14 +214,52 @@ local function cachePlayerParts(plr, char)
     playersData[plr] = {parts = parts}
 end
 
-local function setupPlayer(plr) if plr==LP then return end if playersData[plr] then hideAll(playersData[plr]) end if connections[plr] then for _,c in pairs(connections[plr]) do if c then c:Disconnect() end end end playersData[plr]={parts={}, drawings=nil, skeletonLines=nil, texts=nil, tracer=nil, adornment=nil, arrow=nil, highlight=nil, visible=false, lastVisibleUpdate=0} renderData[plr]=nil connections[plr]={}
-    local ca=plr.CharacterAdded:Connect(function(char) task.spawn(function() if LP.Character then rayParams.FilterDescendantsInstances={LP.Character, Camera} end local hrp=char:WaitForChild("HumanoidRootPart",5) local head=char:WaitForChild("Head",5) if hrp and head and char.Parent then cachePlayerParts(plr,char) local d=playersData[plr] if d then if d.highlight then safeDestroy(d.highlight); d.highlight=nil end if Config.ESP.Chams then local hl=Instance.new("Highlight") hl.Name="GlupostESPHighlight" hl.FillColor=Config.ESP.ChamsVisibleColor hl.OutlineColor=Config.ESP.ChamsOccludedColor hl.FillTransparency=Config.ESP.ChamsTransparency hl.Parent=char d.highlight=hl end end end end) end)
+local function setupPlayer(plr) 
+    if plr==LP then return end 
+    if playersData[plr] then hideAll(playersData[plr]) end 
+    if connections[plr] then for _,c in pairs(connections[plr]) do if c then c:Disconnect() end end end 
+    playersData[plr]={parts={}, drawings=nil, skeletonLines=nil, texts=nil, tracer=nil, adornment=nil, arrow=nil, highlight=nil, visible=false, lastVisibleUpdate=0} 
+    renderData[plr]=nil 
+    connections[plr]={}
+    
+    local ca=plr.CharacterAdded:Connect(function(char) 
+        task.spawn(function() 
+            if LP.Character then rayParams.FilterDescendantsInstances={LP.Character, Camera} end 
+            local hrp=char:WaitForChild("HumanoidRootPart",5) 
+            local head=char:WaitForChild("Head",5) 
+            if hrp and head and char.Parent then 
+                cachePlayerParts(plr,char) 
+                local d=playersData[plr] 
+                if d then 
+                    if d.highlight then safeDestroy(d.highlight); d.highlight=nil end 
+                    if Config.ESP.Chams then 
+                        local hl=Instance.new("Highlight") 
+                        hl.Name="GlupostESPHighlight" 
+                        hl.FillColor=Config.ESP.ChamsVisibleColor 
+                        hl.OutlineColor=Config.ESP.ChamsOccludedColor 
+                        hl.FillTransparency=Config.ESP.ChamsTransparency 
+                        hl.Parent=char 
+                        d.highlight=hl 
+                    end 
+                end 
+            end 
+        end) 
+    end)
+    
     local cr=plr.CharacterRemoving:Connect(function()
-        if playersData[plr] then hideAll(playersData[plr]) end
+        if playersData[plr] then 
+            if playersData[plr].highlight then
+                safeDestroy(playersData[plr].highlight)
+                playersData[plr].highlight = nil
+            end
+            hideAll(playersData[plr]) 
+        end
         predictionCache[plr] = nil
         threatScoreCache[plr] = nil
     end)
-    connections[plr].CharacterAdded=ca connections[plr].CharacterRemoving=cr
+    
+    connections[plr].CharacterAdded=ca 
+    connections[plr].CharacterRemoving=cr
     if plr.Character then cachePlayerParts(plr, plr.Character) end
 end
 
@@ -602,7 +630,7 @@ local function applySmoothing(currentCF, targetCF, targetPart)
     return targetCF
 end
 
--- ===== SILENT AIM (цепочка) =====
+-- ===== SILENT AIM (Исправленный Namecall) =====
 local gmt = getrawmetatable(game)
 local oldNamecall, oldIndex
 local ourSilentHook
@@ -615,11 +643,11 @@ local function initSilentAimbot()
     ourSilentHook = {
         namecall = function(self, ...)
             local method = getnamecallmethod()
-            local args = {...}
             if Config.Aimbot.SilentEnabled and Config.Aimbot.Enabled and not isUnloaded then
                 if (method == "Raycast" or method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList") and self == workspace then
                     if currentTarget and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
                         if math.random(1,100) <= Config.Aimbot.HitChance then
+                            local args = {...}
                             local origin = args[1]
                             local adjTarget = currentTarget.Position
                             if Config.Aimbot.RCSEnabled and Config.Aimbot.RCSAdaptiveLearning then
@@ -627,11 +655,11 @@ local function initSilentAimbot()
                             end
                             if method == "Raycast" and typeof(origin)=="Vector3" then
                                 args[2] = (adjTarget - origin).Unit * CONST.SILENT_RAY_LENGTH
-                                return oldNamecall(self, unpack(args))
+                                return oldNamecall(self, table.unpack(args))
                             elseif method ~= "Raycast" then
                                 local oldRay = args[1]
                                 args[1] = Ray.new(oldRay.Origin, (adjTarget - oldRay.Origin).Unit * CONST.SILENT_RAY_LENGTH)
-                                return oldNamecall(self, unpack(args))
+                                return oldNamecall(self, table.unpack(args))
                             end
                         end
                     end
@@ -680,7 +708,7 @@ local function removeSilentHook()
     ourSilentHook = nil
 end
 
--- ===== RAGE ПЕРЕКЛЮЧЕНИЕ (AlignOrientation) =====
+-- ===== RAGE ПЕРЕКЛЮЧЕНИЕ (Исправленный Spinbot) =====
 local spinGyro = nil
 
 local function createSpinbot()
@@ -700,7 +728,7 @@ local function createSpinbot()
     att0.Parent = hrp
     local att1 = Instance.new("Attachment")
     att1.WorldCFrame = hrp.CFrame
-    att1.Parent = workspace.Terrain
+    att1.Parent = hrp -- Безопасная привязка к себе вместо Terrain
 
     align.Attachment0 = att0
     align.Attachment1 = att1
@@ -993,8 +1021,11 @@ local function updateAimbotLoop(dt)
         local now = tick()
         if now - lastAutoFireShot >= CONST.AUTO_FIRE_COOLDOWN then
             if math.random(1,100) <= Config.Aimbot.HitChance then
-                mouse1press()
-                mouse1release()
+                if mouse1press and mouse1release then
+                    mouse1press()
+                    task.wait(0.01) -- Задержка клика для предотвращения античит-флагов
+                    mouse1release()
+                end
             end
             lastAutoFireShot = now
             recordRecoilStart()
@@ -1192,12 +1223,13 @@ local uiGroup=Tabs["UI Settings"]:AddLeftGroupbox("Menu")
 uiGroup:AddKeyPicker("MenuKeybind",{Default="RightShift",NoUI=true,Text="Menu keybind"})
 uiGroup:AddButton("Unload",function() unloadHub() end)
 
+ThemeManager:SetFolder("glupost_hub")
+SaveManager:SetFolder("glupost_hub/configs")
+
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({"MenuKeybind"})
-ThemeManager:SetFolder("glupost_hub")
-SaveManager:SetFolder("glupost_hub/configs")
 SaveManager:BuildConfigSection(Tabs["UI Settings"])
 ThemeManager:ApplyToTab(Tabs["UI Settings"])
 SaveManager:LoadAutoloadConfig()
@@ -1285,3 +1317,4 @@ end)
 setupHotkeys()
 
 print("glupost hub v16.3 FINAL loaded. All known issues resolved.")
+
