@@ -1,4 +1,4 @@
--- glupost hub v16.6.0 (ПОЛНЫЙ СКРИПТ СО ВСЕМИ МОДУЛЯМИ И GUI)
+-- glupost hub v16.7.0 (Полный скрипт, Prediction с ускорением + все модули)
 
 if getgenv().GlupostHubLoaded then return end
 getgenv().GlupostHubLoaded = true
@@ -536,7 +536,7 @@ local function updateArrowOptimized(d, rd)
     for _, a in pairs(d.arrow) do a.Color = color; a.Visible = true end
 end
 
--- ===== THREAT SCORE & PREDICTION =====
+-- ===== THREAT SCORE & PREDICTION (с ускорением) =====
 local function isVisibleThreat(head)
     if not head then return false end
     local origin = Camera.CFrame.Position
@@ -587,16 +587,55 @@ local function calculateThreatScore(plr, parts)
     return score
 end
 
+local function updatePredictionCache()
+    local now = tick()
+    if now - lastPredictionUpdate < CONST.PREDICTION_CACHE_INTERVAL then return end
+    lastPredictionUpdate = now
+
+    for plr, data in pairs(playersData) do
+        local parts = data.parts
+        if not parts or not parts.HumanoidRootPart then continue end
+        local hrp = parts.HumanoidRootPart
+        if not isPartValid(hrp) then continue end
+        local pos = hrp.Position
+        local prev = predictionCache[plr]
+
+        if prev then
+            local dt = now - prev.time
+            if dt > CONST.PREDICTION_MIN_DT then
+                local newVel = (pos - prev.pos) / dt
+                local newAcc = (newVel - prev.velocity) / dt
+                prev.acceleration = prev.acceleration * 0.5 + newAcc * 0.5
+                prev.velocity = prev.velocity * Config.Aimbot.VelocitySmoothing + newVel * (1 - Config.Aimbot.VelocitySmoothing)
+            end
+            prev.pos = pos
+            prev.time = now
+        else
+            predictionCache[plr] = {
+                pos = pos,
+                velocity = Vector3.zero,
+                acceleration = Vector3.zero,
+                time = now
+            }
+        end
+    end
+end
+
 local function getPredictedPosition(targetPart)
     if not Config.Aimbot.Prediction then return targetPart.Position end
-    local plr = targetPart.Parent and targetPart.Parent.Parent and Players:GetPlayerFromCharacter(targetPart.Parent)
+
+    local plr = Players:GetPlayerFromCharacter(targetPart.Parent)
     if not plr then return targetPart.Position end
+
     local pred = predictionCache[plr]
-    if not pred or not pred.velocity then return targetPart.Position end
-    local now = tick()
-    local dt = now - pred.time
+    if not pred then return targetPart.Position end
+
+    local dt = tick() - pred.time
     if dt > 0.2 then return targetPart.Position end
-    return targetPart.Position + pred.velocity * Config.Aimbot.PredictionFactor
+
+    local t = Config.Aimbot.PredictionFactor
+    local predictionOffset = (pred.velocity * t) + (0.5 * pred.acceleration * (t * t))
+    return targetPart.Position + predictionOffset
 end
 
 -- ===== RCS =====
@@ -930,31 +969,6 @@ local aimActive = false
 local aimKeyPressedTime = 0
 local lastAutoFireShot = 0
 
-local function updatePredictionCache()
-    local now = tick()
-    if now - lastPredictionUpdate < CONST.PREDICTION_CACHE_INTERVAL then return end
-    lastPredictionUpdate = now
-    for plr, data in pairs(playersData) do
-        local parts = data.parts
-        if not parts then continue end
-        local hrp = parts.HumanoidRootPart
-        if not hrp or not isPartValid(hrp) then continue end
-        local pos = hrp.Position
-        local prev = predictionCache[plr]
-        if prev then
-            local dt = now - prev.time
-            if dt > CONST.PREDICTION_MIN_DT then
-                local newVel = (pos - prev.pos) / dt
-                prev.velocity = prev.velocity * Config.Aimbot.VelocitySmoothing + newVel * (1 - Config.Aimbot.VelocitySmoothing)
-            end
-            prev.pos = pos
-            prev.time = now
-        else
-            predictionCache[plr] = { pos = pos, velocity = Vector3.zero, time = now }
-        end
-    end
-end
-
 local function updateAimbotLoop(dt)
     if isUnloaded then return end
     if not Config.Aimbot.Enabled then return end
@@ -1201,7 +1215,7 @@ local function updateFrameTimeProfiler()
 end
 
 -- ===== GUI (ПОЛНЫЙ) =====
-local Window = Library:CreateWindow({Title="glupost hub",Footer="v16.6.0",NotifySide="Right",ShowCustomCursor=true})
+local Window = Library:CreateWindow({Title="glupost hub",Footer="v16.7.0",NotifySide="Right",ShowCustomCursor=true})
 local Tabs = {
     Main=Window:AddTab("Main","user"),
     Visuals=Window:AddTab("Visuals","palette"),
@@ -1418,4 +1432,4 @@ renderSteppedConn=RunService.RenderStepped:Connect(function(dt)
 end)
 setupHotkeys()
 
-print("glupost hub v16.6.0 loaded (Full, GUI, ScreenPoint Sync)")
+print("glupost hub v16.7.0 loaded (Acceleration Prediction, Full)")
