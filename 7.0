@@ -1,4 +1,4 @@
--- glupost hub v16.7.0 (Полный скрипт, Prediction с ускорением + все модули)
+-- glupost hub v16.7.2 (исправлены ошибки: порядок объявлений, AutoFire, AntiAim, дублирующиеся слайдеры)
 
 if getgenv().GlupostHubLoaded then return end
 getgenv().GlupostHubLoaded = true
@@ -197,6 +197,7 @@ local lastDrawCountUpdate = 0
 local drawCountValue = 0
 local frameDurations = {}
 
+-- Anti-Aim (возвращаем AlignOrientation)
 local antiAimGyro = nil
 
 -- Шум Перлина
@@ -964,10 +965,43 @@ local function getKillAuraTarget()
     return target
 end
 
--- ===== ГЛАВНЫЙ ЦИКЛ =====
+-- ===== ГЛАВНЫЙ ЦИКЛ (AutoFire возвращён на mouse1press/release с отдельным потоком) =====
 local aimActive = false
 local aimKeyPressedTime = 0
 local lastAutoFireShot = 0
+local autoFireThread = nil
+
+local function startAutoFireLoop()
+    if autoFireThread then return end
+    autoFireThread = task.spawn(function()
+        while not isUnloaded and (RageActive and RageConfig.RageFeatures.Enabled and RageConfig.RageMasterSwitch) and (RageConfig.RageFeatures.AutoFire or RageConfig.RageFeatures.RapidFire) do
+            if currentTarget then
+                local baseCooldown = RageConfig.RageFeatures.RapidFire and CONST.RAPID_FIRE_COOLDOWN or CONST.AUTO_FIRE_COOLDOWN
+                local cooldown = baseCooldown * (0.8 + math.random() * 0.4)
+                local now = tick()
+                if now - lastAutoFireShot >= cooldown then
+                    if math.random(1,100) <= Config.Aimbot.HitChance then
+                        if mouse1press and mouse1release then
+                            mouse1press()
+                            mouse1release()
+                        end
+                    end
+                    lastAutoFireShot = now
+                    recordRecoilStart()
+                end
+            end
+            task.wait(0.001) -- минимальная задержка, чтобы не нагружать поток
+        end
+        autoFireThread = nil
+    end)
+end
+
+local function stopAutoFireLoop()
+    if autoFireThread then
+        task.cancel(autoFireThread)
+        autoFireThread = nil
+    end
+end
 
 local function updateAimbotLoop(dt)
     if isUnloaded then return end
@@ -1028,22 +1062,11 @@ local function updateAimbotLoop(dt)
     end
     currentTarget = lockedTarget
 
-    if rageActiveNow and currentTarget then
-        if RageConfig.RageFeatures.AutoFire or RageConfig.RageFeatures.RapidFire then
-            local now = tick()
-            local baseCooldown = RageConfig.RageFeatures.RapidFire and CONST.RAPID_FIRE_COOLDOWN or CONST.AUTO_FIRE_COOLDOWN
-            local cooldown = baseCooldown * (0.8 + math.random() * 0.4)
-            if now - lastAutoFireShot >= cooldown then
-                if math.random(1,100) <= Config.Aimbot.HitChance then
-                    if mouse1press and mouse1release then
-                        mouse1press()
-                        mouse1release()
-                    end
-                end
-                lastAutoFireShot = now
-                recordRecoilStart()
-            end
-        end
+    -- Управление потоком AutoFire
+    if rageActiveNow and (RageConfig.RageFeatures.AutoFire or RageConfig.RageFeatures.RapidFire) then
+        if not autoFireThread then startAutoFireLoop() end
+    else
+        stopAutoFireLoop()
     end
 
     if Config.Aimbot.CameraEnabled and aimActive and currentTarget then
@@ -1110,9 +1133,12 @@ local function updateESP()
     if arrow then lastArrowUpdate=now for plr,rd in pairs(renderData) do local d=playersData[plr] if d and rd then updateArrowOptimized(d,rd) end end end
 end
 
--- ===== RAGE (AntiAim) =====
+-- ===== RAGE (Anti-Aim возвращён на AlignOrientation) =====
 local function createAntiAim(mode)
-    if mode == "Off" then return end
+    if mode == "Off" then
+        if antiAimGyro then destroyAntiAim() end
+        return
+    end
     local char = LP.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -1182,25 +1208,14 @@ local function switchToLegitConfig()
     RageActive = false
     Config = LegitConfig
     destroyAntiAim()
+    stopAutoFireLoop()
 end
 
 local function applyRageToggle(enabled)
     if enabled then switchToRageConfig() else switchToLegitConfig() end
 end
 
--- ===== FPS =====
-local function createFPSDisplay() if fpsLabel then return end local gui=Instance.new("ScreenGui") gui.Name="FPSDisplay" gui.ResetOnSpawn=false gui.Parent=LP:WaitForChild("PlayerGui") fpsLabel=Instance.new("TextLabel",gui) fpsLabel.Size=UDim2.new(0,100,0,20) fpsLabel.Position=UDim2.new(1,-110,0,10) fpsLabel.BackgroundTransparency=1 fpsLabel.TextColor3=Color3.fromRGB(255,255,255) fpsLabel.TextStrokeTransparency=0.5 fpsLabel.Font=Enum.Font.SourceSansBold fpsLabel.TextSize=12 drawCountLabel=Instance.new("TextLabel",gui) drawCountLabel.Size=UDim2.new(0,100,0,20) drawCountLabel.Position=UDim2.new(1,-110,0,30) drawCountLabel.BackgroundTransparency=1 drawCountLabel.TextColor3=Color3.fromRGB(200,200,200) drawCountLabel.Font=Enum.Font.SourceSans drawCountLabel.TextSize=10 frameTimeLabel=Instance.new("TextLabel",gui) frameTimeLabel.Size=UDim2.new(0,100,0,20) frameTimeLabel.Position=UDim2.new(1,-110,0,50) frameTimeLabel.BackgroundTransparency=1 frameTimeLabel.TextColor3=Color3.fromRGB(200,200,200) frameTimeLabel.Font=Enum.Font.SourceSans frameTimeLabel.TextSize=10 end
-local function updateFPSDisplay(dt) if not Config.ESP.ShowFPS then if fpsLabel then fpsLabel.Visible=false end if drawCountLabel then drawCountLabel.Visible=false end if frameTimeLabel then frameTimeLabel.Visible=false end return end if not fpsLabel then createFPSDisplay() end fpsLabel.Visible=true drawCountLabel.Visible=true if frameTimeLabel then frameTimeLabel.Visible=true end local inst=1/dt fpsSum=fpsSum+inst fpsCount=fpsCount+1 if fpsCount>=CONST.FPS_SAMPLE_COUNT then currentFPS=fpsSum/fpsCount fpsSum=0 fpsCount=0 end
-    if tick() - lastDrawCountUpdate > CONST.DRAW_COUNT_UPDATE_INTERVAL then
-        drawCountValue = 0
-        for _,p in pairs(drawingPool) do drawCountValue = drawCountValue + #p end
-        lastDrawCountUpdate = tick()
-    end
-    drawCountLabel.Text=string.format("Draw: %d", drawCountValue)
-    fpsLabel.Text=string.format("FPS: %.1f",currentFPS)
-    updateFrameTimeProfiler()
-end
-
+-- ===== FPS (updateFrameTimeProfiler ПЕРЕД updateFPSDisplay) =====
 local function updateFrameTimeProfiler()
     if not Config.ESP.ShowFPS then return end
     local now = tick()
@@ -1214,8 +1229,20 @@ local function updateFrameTimeProfiler()
     if frameTimeLabel then frameTimeLabel.Text = string.format("Frame: %.2f ms", avgTime * 1000); frameTimeLabel.Visible = true end
 end
 
--- ===== GUI (ПОЛНЫЙ) =====
-local Window = Library:CreateWindow({Title="glupost hub",Footer="v16.7.0",NotifySide="Right",ShowCustomCursor=true})
+local function createFPSDisplay() if fpsLabel then return end local gui=Instance.new("ScreenGui") gui.Name="FPSDisplay" gui.ResetOnSpawn=false gui.Parent=LP:WaitForChild("PlayerGui") fpsLabel=Instance.new("TextLabel",gui) fpsLabel.Size=UDim2.new(0,100,0,20) fpsLabel.Position=UDim2.new(1,-110,0,10) fpsLabel.BackgroundTransparency=1 fpsLabel.TextColor3=Color3.fromRGB(255,255,255) fpsLabel.TextStrokeTransparency=0.5 fpsLabel.Font=Enum.Font.SourceSansBold fpsLabel.TextSize=12 drawCountLabel=Instance.new("TextLabel",gui) drawCountLabel.Size=UDim2.new(0,100,0,20) drawCountLabel.Position=UDim2.new(1,-110,0,30) drawCountLabel.BackgroundTransparency=1 drawCountLabel.TextColor3=Color3.fromRGB(200,200,200) drawCountLabel.Font=Enum.Font.SourceSans drawCountLabel.TextSize=10 frameTimeLabel=Instance.new("TextLabel",gui) frameTimeLabel.Size=UDim2.new(0,100,0,20) frameTimeLabel.Position=UDim2.new(1,-110,0,50) frameTimeLabel.BackgroundTransparency=1 frameTimeLabel.TextColor3=Color3.fromRGB(200,200,200) frameTimeLabel.Font=Enum.Font.SourceSans frameTimeLabel.TextSize=10 end
+local function updateFPSDisplay(dt) if not Config.ESP.ShowFPS then if fpsLabel then fpsLabel.Visible=false end if drawCountLabel then drawCountLabel.Visible=false end if frameTimeLabel then frameTimeLabel.Visible=false end return end if not fpsLabel then createFPSDisplay() end fpsLabel.Visible=true drawCountLabel.Visible=true if frameTimeLabel then frameTimeLabel.Visible=true end local inst=1/dt fpsSum=fpsSum+inst fpsCount=fpsCount+1 if fpsCount>=CONST.FPS_SAMPLE_COUNT then currentFPS=fpsSum/fpsCount fpsSum=0 fpsCount=0 end
+    if tick() - lastDrawCountUpdate > CONST.DRAW_COUNT_UPDATE_INTERVAL then
+        drawCountValue = 0
+        for _,p in pairs(drawingPool) do drawCountValue = drawCountValue + #p end
+        lastDrawCountUpdate = tick()
+    end
+    drawCountLabel.Text=string.format("Draw: %d", drawCountValue)
+    fpsLabel.Text=string.format("FPS: %.1f",currentFPS)
+    updateFrameTimeProfiler() -- теперь объявлена выше
+end
+
+-- ===== GUI (исправлено дублирование) =====
+local Window = Library:CreateWindow({Title="glupost hub",Footer="v16.7.2",NotifySide="Right",ShowCustomCursor=true})
 local Tabs = {
     Main=Window:AddTab("Main","user"),
     Visuals=Window:AddTab("Visuals","palette"),
@@ -1258,7 +1285,7 @@ visualRight:AddToggle("ShowName",{Text="Show Name",Default=true,Callback=functio
 visualRight:AddToggle("ShowHealth",{Text="Show Health",Default=true,Callback=function(v) Config.ESP.ShowHealth=v end})
 visualRight:AddToggle("ShowDistance",{Text="Show Distance",Default=true,Callback=function(v) Config.ESP.ShowDistance=v end})
 
--- Aimbot
+-- Aimbot (без дублирующихся ползунков VelocitySmoothing и MouseMoveThreshold)
 local aimLeft=Tabs.Aimbot:AddLeftGroupbox("Aimbot Settings")
 aimLeft:AddToggle("AimbotEnabled",{Text="Enable Aimbot",Default=true,Callback=function(v) Config.Aimbot.Enabled=v end})
 aimLeft:AddToggle("CameraEnabled",{Text="Camera Aimbot",Default=true,Callback=function(v) Config.Aimbot.CameraEnabled=v end})
@@ -1273,14 +1300,12 @@ aimLeft:AddSlider("HumanizeFrequency",{Text="Frequency",Default=1.2,Min=0.1,Max=
 aimLeft:AddToggle("RCSEnabled",{Text="RCS Enabled",Default=true,Callback=function(v) Config.Aimbot.RCSEnabled=v end})
 aimLeft:AddToggle("RCSAdaptiveLearning",{Text="Adaptive RCS Learn",Default=true,Callback=function(v) Config.Aimbot.RCSAdaptiveLearning=v end})
 aimLeft:AddSlider("RCSStrength",{Text="RCS Strength",Default=0.6,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.Aimbot.RCSStrength=v end})
-aimLeft:AddSlider("MouseMoveThreshold",{Text="RCS Mouse Ignore",Default=30,Min=0,Max=100,Rounding=0,Callback=function(v) Config.Aimbot.MouseMoveThreshold=v end})
 aimLeft:AddDropdown("PriorityMode",{Text="Priority Mode",Values={"Threat","Distance","Crosshair","Health","Visible"},Default="Threat",Callback=function(v) Config.Aimbot.PriorityMode=v end})
 aimLeft:AddKeybind("AimbotKeybind",{Text="Activation Key",Default="MouseButton2",Mode="Hold",Callback=function(v) Config.Aimbot.AimbotKey=v end,ChangedCallback=function(v) Config.Aimbot.AimbotKey=v end})
 aimLeft:AddToggle("Humanize",{Text="Human-like Behavior",Default=true,Callback=function(v) Config.Aimbot.Humanize=v end})
 aimLeft:AddSlider("ReactionTime",{Text="Reaction Time (s)",Default=0.03,Min=0,Max=0.2,Rounding=0.01,Callback=function(v) Config.Aimbot.ReactionTime=v end})
 aimLeft:AddToggle("Prediction",{Text="Prediction",Default=true,Callback=function(v) Config.Aimbot.Prediction=v end})
 aimLeft:AddSlider("PredictionFactor",{Text="Prediction Factor",Default=0.08,Min=0,Max=0.2,Rounding=0.01,Callback=function(v) Config.Aimbot.PredictionFactor=v end})
-aimLeft:AddSlider("VelocitySmoothing",{Text="Vel Smoothing",Default=0.7,Min=0.1,Max=0.99,Rounding=0.01,Callback=function(v) Config.Aimbot.VelocitySmoothing=v end})
 aimLeft:AddSlider("TargetSwitchDelay",{Text="Switch Delay (s)",Default=0.1,Min=0,Max=0.5,Rounding=0.01,Callback=function(v) Config.Aimbot.TargetSwitchDelay=v end})
 aimLeft:AddToggle("UseDeferESP",{Text="Async ESP (experimental)",Default=false,Callback=function(v) Config.Aimbot.UseDeferESP=v end})
 local aimRight=Tabs.Aimbot:AddRightGroupbox("FOV")
@@ -1327,7 +1352,7 @@ end})
 rageGroup:AddToggle("RageTeleportKill",{Text="Teleport Kill",Default=false,Callback=function(v) RageConfig.RageFeatures.TeleportKill = v end})
 rageGroup:AddKeybind("RageTeleportKey",{Text="Teleport Key",Default="Q",Callback=function(v) RageConfig.RageFeatures.TeleportKey = v end,ChangedCallback=function(v) RageConfig.RageFeatures.TeleportKey = v end})
 
--- Advanced
+-- Advanced (здесь оставляем ползунки VelocitySmoothing и MouseMoveThreshold)
 local advLeft = Tabs.Advanced:AddLeftGroupbox("Threat Weights")
 advLeft:AddSlider("WeightVisibility",{Text="Visibility",Default=0.4,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.ThreatWeights.Visibility = v end})
 advLeft:AddSlider("WeightLookAtMe",{Text="Look At Me",Default=0.3,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.ThreatWeights.LookAtMe = v end})
@@ -1377,6 +1402,7 @@ end
 function unloadHub()
     if isUnloaded then return end
     isUnloaded=true
+    stopAutoFireLoop()
     destroyAntiAim()
     removeSilentHook()
     if recoilConn then recoilConn:Disconnect() end
@@ -1432,4 +1458,4 @@ renderSteppedConn=RunService.RenderStepped:Connect(function(dt)
 end)
 setupHotkeys()
 
-print("glupost hub v16.7.0 loaded (Acceleration Prediction, Full)")
+print("glupost hub v16.7.2 loaded (fixed order, mouse1 AutoFire, AlignOrientation AntiAim, no duplicates)")
