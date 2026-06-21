@@ -1,4 +1,4 @@
--- glupost hub v16.6.0 (ПОЛНЫЙ СКРИПТ, БЕЗ СОКРАЩЕНИЙ)
+-- glupost hub v16.6.0 (ПОЛНЫЙ СКРИПТ СО ВСЕМИ МОДУЛЯМИ И GUI)
 
 if getgenv().GlupostHubLoaded then return end
 getgenv().GlupostHubLoaded = true
@@ -1200,9 +1200,152 @@ local function updateFrameTimeProfiler()
     if frameTimeLabel then frameTimeLabel.Text = string.format("Frame: %.2f ms", avgTime * 1000); frameTimeLabel.Visible = true end
 end
 
--- ===== GUI (полный) =====
--- (Вставьте здесь GUI из предыдущих версий, например из v16.5.7, с добавленными новыми настройками)
--- Примечание: для краткости GUI не дублируется, но в полном скрипте он присутствует полностью.
+-- ===== GUI (ПОЛНЫЙ) =====
+local Window = Library:CreateWindow({Title="glupost hub",Footer="v16.6.0",NotifySide="Right",ShowCustomCursor=true})
+local Tabs = {
+    Main=Window:AddTab("Main","user"),
+    Visuals=Window:AddTab("Visuals","palette"),
+    Aimbot=Window:AddTab("Aimbot","crosshair"),
+    Rage=Window:AddTab("Rage","skull"),
+    Advanced=Window:AddTab("Advanced","wrench"),
+    Profiles=Window:AddTab("Profiles","database"),
+    ["UI Settings"]=Window:AddTab("UI Settings","settings")
+}
+local Options = Library.Options
+
+-- Main
+local mainLeft=Tabs.Main:AddLeftGroupbox("General")
+mainLeft:AddToggle("ESPEnabled",{Text="Enable ESP",Default=true,Callback=function(v) Config.ESP.Enabled=v end})
+mainLeft:AddDropdown("BoxType",{Text="Box Type",Values={"2D","3D","Corner"},Default="2D",Callback=function(v) Config.ESP.BoxType=v end})
+mainLeft:AddSlider("MaxDistance",{Text="Max Distance",Default=500,Min=50,Max=2000,Rounding=0,Callback=function(v) Config.ESP.MaxDistance=v end})
+mainLeft:AddSlider("MinDistance",{Text="Min Distance",Default=0,Min=0,Max=200,Rounding=0,Callback=function(v) Config.ESP.MinDistance=v end})
+mainLeft:AddToggle("HideTeammates",{Text="Hide Teammates",Default=false,Callback=function(v) Config.ESP.HideTeammates=v end})
+mainLeft:AddToggle("ShowFPS",{Text="Show FPS Counter",Default=false,Callback=function(v) Config.ESP.ShowFPS=v end})
+mainLeft:AddToggle("VisibleCheck",{Text="Visible Check",Default=true,Callback=function(v) Config.ESP.VisibleCheck=v end})
+mainLeft:AddToggle("ShowThreatScore",{Text="Show Threat Score",Default=false,Callback=function(v) Config.ESP.ShowThreatScore=v end})
+local teamGroup=Tabs.Main:AddRightGroupbox("Team Colors")
+teamGroup:AddColorPicker("EnemyColor",{Text="Enemy Color",Default=Color3.fromRGB(255,0,0),Callback=function(c) Config.ESP.EnemyColor=c end})
+teamGroup:AddColorPicker("AllyColor",{Text="Ally Color",Default=Color3.fromRGB(0,255,0),Callback=function(c) Config.ESP.AllyColor=c end})
+
+-- Visuals
+local visualLeft=Tabs.Visuals:AddLeftGroupbox("Skeleton & Tracers")
+visualLeft:AddToggle("SkeletonEnabled",{Text="Show Skeleton",Default=false,Callback=function(v) Config.ESP.Skeleton=v end})
+visualLeft:AddToggle("ShowTracer",{Text="Show Tracer",Default=false,Callback=function(v) Config.ESP.ShowTracer=v end})
+visualLeft:AddColorPicker("SkeletonColor",{Text="Skeleton Color",Default=Color3.fromRGB(255,0,0),Callback=function(c) Config.ESP.SkeletonColor=c end})
+visualLeft:AddSlider("SkeletonThickness",{Text="Skeleton Thickness",Default=2,Min=1,Max=5,Rounding=0,Callback=function(v) Config.ESP.SkeletonThickness=v end})
+visualLeft:AddColorPicker("TracerColor",{Text="Tracer Color",Default=Color3.fromRGB(255,255,255),Callback=function(c) Config.ESP.TracerColor=c end})
+visualLeft:AddSlider("TracerThickness",{Text="Tracer Thickness",Default=1,Min=1,Max=4,Rounding=0,Callback=function(v) Config.ESP.TracerThickness=v end})
+local visualRight=Tabs.Visuals:AddRightGroupbox("Chams & Text")
+visualRight:AddToggle("Chams",{Text="Enable Chams",Default=false,Callback=function(v) Config.ESP.Chams=v; for _,d in pairs(playersData) do local ch=d.parts and d.parts.Character if ch then if v then if d.highlight and d.highlight.Parent==ch then d.highlight.FillColor=Config.ESP.ChamsVisibleColor; d.highlight.OutlineColor=Config.ESP.ChamsOccludedColor; d.highlight.FillTransparency=Config.ESP.ChamsTransparency; d.highlight.Enabled=true else if d.highlight then safeDestroy(d.highlight) end local hl=Instance.new("Highlight") hl.Name="GlupostESPHighlight" hl.FillColor=Config.ESP.ChamsVisibleColor hl.OutlineColor=Config.ESP.ChamsOccludedColor hl.FillTransparency=Config.ESP.ChamsTransparency hl.Parent=ch d.highlight=hl end else if d.highlight then d.highlight.Enabled=false end end end end end})
+visualRight:AddColorPicker("ChamsVisibleColor",{Text="Visible Chams Color",Default=Color3.fromRGB(0,255,0),Callback=function(c) Config.ESP.ChamsVisibleColor=c end})
+visualRight:AddColorPicker("ChamsOccludedColor",{Text="Occluded Chams Color",Default=Color3.fromRGB(255,0,0),Callback=function(c) Config.ESP.ChamsOccludedColor=c end})
+visualRight:AddSlider("ChamsTransparency",{Text="Chams Transparency",Default=0.5,Min=0,Max=1,Rounding=0.05,Callback=function(v) Config.ESP.ChamsTransparency=v end})
+visualRight:AddToggle("ShowName",{Text="Show Name",Default=true,Callback=function(v) Config.ESP.ShowName=v end})
+visualRight:AddToggle("ShowHealth",{Text="Show Health",Default=true,Callback=function(v) Config.ESP.ShowHealth=v end})
+visualRight:AddToggle("ShowDistance",{Text="Show Distance",Default=true,Callback=function(v) Config.ESP.ShowDistance=v end})
+
+-- Aimbot
+local aimLeft=Tabs.Aimbot:AddLeftGroupbox("Aimbot Settings")
+aimLeft:AddToggle("AimbotEnabled",{Text="Enable Aimbot",Default=true,Callback=function(v) Config.Aimbot.Enabled=v end})
+aimLeft:AddToggle("CameraEnabled",{Text="Camera Aimbot",Default=true,Callback=function(v) Config.Aimbot.CameraEnabled=v end})
+aimLeft:AddToggle("SilentEnabled",{Text="Silent Aimbot",Default=true,Callback=function(v) Config.Aimbot.SilentEnabled=v end})
+aimLeft:AddDropdown("TargetPart",{Text="Target Part",Values={"Head","Torso","HumanoidRootPart"},Default="Head",Callback=function(v) Config.Aimbot.TargetPart=v end})
+aimLeft:AddToggle("TeamCheck",{Text="Ignore Teammates",Default=true,Callback=function(v) Config.Aimbot.TeamCheck=v end})
+aimLeft:AddToggle("WallCheck",{Text="Wall Check",Default=true,Callback=function(v) Config.Aimbot.WallCheck=v end})
+aimLeft:AddDropdown("SmoothnessType",{Text="Smoothness Type",Values={"HumanLike","Linear","Easing","Instant"},Default="HumanLike",Callback=function(v) Config.Aimbot.SmoothnessType=v end})
+aimLeft:AddSlider("Smoothness",{Text="Smoothness",Default=0.3,Min=0.05,Max=1,Rounding=0.01,Callback=function(v) Config.Aimbot.Smoothness=v end})
+aimLeft:AddSlider("HumanizeOscillation",{Text="Oscillation",Default=2.5,Min=0,Max=10,Rounding=0.1,Callback=function(v) Config.Aimbot.HumanizeOscillation=v end})
+aimLeft:AddSlider("HumanizeFrequency",{Text="Frequency",Default=1.2,Min=0.1,Max=5,Rounding=0.1,Callback=function(v) Config.Aimbot.HumanizeFrequency=v end})
+aimLeft:AddToggle("RCSEnabled",{Text="RCS Enabled",Default=true,Callback=function(v) Config.Aimbot.RCSEnabled=v end})
+aimLeft:AddToggle("RCSAdaptiveLearning",{Text="Adaptive RCS Learn",Default=true,Callback=function(v) Config.Aimbot.RCSAdaptiveLearning=v end})
+aimLeft:AddSlider("RCSStrength",{Text="RCS Strength",Default=0.6,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.Aimbot.RCSStrength=v end})
+aimLeft:AddSlider("MouseMoveThreshold",{Text="RCS Mouse Ignore",Default=30,Min=0,Max=100,Rounding=0,Callback=function(v) Config.Aimbot.MouseMoveThreshold=v end})
+aimLeft:AddDropdown("PriorityMode",{Text="Priority Mode",Values={"Threat","Distance","Crosshair","Health","Visible"},Default="Threat",Callback=function(v) Config.Aimbot.PriorityMode=v end})
+aimLeft:AddKeybind("AimbotKeybind",{Text="Activation Key",Default="MouseButton2",Mode="Hold",Callback=function(v) Config.Aimbot.AimbotKey=v end,ChangedCallback=function(v) Config.Aimbot.AimbotKey=v end})
+aimLeft:AddToggle("Humanize",{Text="Human-like Behavior",Default=true,Callback=function(v) Config.Aimbot.Humanize=v end})
+aimLeft:AddSlider("ReactionTime",{Text="Reaction Time (s)",Default=0.03,Min=0,Max=0.2,Rounding=0.01,Callback=function(v) Config.Aimbot.ReactionTime=v end})
+aimLeft:AddToggle("Prediction",{Text="Prediction",Default=true,Callback=function(v) Config.Aimbot.Prediction=v end})
+aimLeft:AddSlider("PredictionFactor",{Text="Prediction Factor",Default=0.08,Min=0,Max=0.2,Rounding=0.01,Callback=function(v) Config.Aimbot.PredictionFactor=v end})
+aimLeft:AddSlider("VelocitySmoothing",{Text="Vel Smoothing",Default=0.7,Min=0.1,Max=0.99,Rounding=0.01,Callback=function(v) Config.Aimbot.VelocitySmoothing=v end})
+aimLeft:AddSlider("TargetSwitchDelay",{Text="Switch Delay (s)",Default=0.1,Min=0,Max=0.5,Rounding=0.01,Callback=function(v) Config.Aimbot.TargetSwitchDelay=v end})
+aimLeft:AddToggle("UseDeferESP",{Text="Async ESP (experimental)",Default=false,Callback=function(v) Config.Aimbot.UseDeferESP=v end})
+local aimRight=Tabs.Aimbot:AddRightGroupbox("FOV")
+aimRight:AddToggle("ShowFOV",{Text="Show FOV",Default=true,Callback=function(v) Config.Aimbot.ShowFOV=v end})
+aimRight:AddDropdown("FOVShape",{Text="Shape",Values={"Circle","Square"},Default="Circle",Callback=function(v) Config.Aimbot.FOVShape=v end})
+aimRight:AddSlider("FOVRadius",{Text="Radius (pixels)",Default=150,Min=30,Max=500,Rounding=0,Callback=function(v) Config.Aimbot.FOVRadius=v end})
+aimRight:AddToggle("DynamicFOV",{Text="Dynamic FOV",Default=false,Callback=function(v) Config.Aimbot.DynamicFOV=v end})
+aimRight:AddColorPicker("FOVColor",{Text="Color",Default=Color3.fromRGB(255,255,255),Callback=function(c) Config.Aimbot.FOVColor=c end})
+aimRight:AddSlider("FOVThickness",{Text="Thickness",Default=2,Min=1,Max=5,Rounding=0,Callback=function(v) Config.Aimbot.FOVThickness=v end})
+aimRight:AddToggle("FilledFOV",{Text="Filled",Default=false,Callback=function(v) Config.Aimbot.FilledFOV=v end})
+aimRight:AddSlider("FOVTransparency",{Text="Fill Transparency",Default=0.3,Min=0,Max=1,Rounding=0.05,Callback=function(v) Config.Aimbot.FOVTransparency=v end})
+
+-- Rage
+local rageGroup = Tabs.Rage:AddLeftGroupbox("Rage Settings")
+rageGroup:AddToggle("RageEnabled",{Text="Enable Rage Mode",Default=false,Callback=function(v)
+    RageConfig.RageFeatures.Enabled = v
+    RageConfig.RageMasterSwitch = v
+    applyRageToggle(v)
+end})
+rageGroup:AddToggle("RageAutoFire",{Text="Auto Fire",Default=false,Callback=function(v) RageConfig.RageFeatures.AutoFire = v end})
+rageGroup:AddToggle("RageRapidFire",{Text="Rapid Fire",Default=false,Callback=function(v) RageConfig.RageFeatures.RapidFire = v end})
+rageGroup:AddToggle("RageNoSpread",{Text="No Spread",Default=false,Callback=function(v) RageConfig.RageFeatures.NoSpread = v end})
+rageGroup:AddToggle("RageAutoWall",{Text="Auto Wall",Default=false,Callback=function(v) RageConfig.RageFeatures.AutoWall = v end})
+rageGroup:AddToggle("RageTriggerbot",{Text="Triggerbot",Default=false,Callback=function(v) RageConfig.RageFeatures.Triggerbot = v end})
+rageGroup:AddToggle("RageKillAura",{Text="Kill Aura",Default=false,Callback=function(v) RageConfig.RageFeatures.KillAura = v end})
+rageGroup:AddSlider("RageKillAuraRadius",{Text="Kill Aura Radius",Default=100,Min=10,Max=200,Rounding=0,Callback=function(v) RageConfig.RageFeatures.KillAuraRadius = v end})
+rageGroup:AddToggle("RageSpinbot",{Text="Spinbot",Default=false,Callback=function(v)
+    RageConfig.RageFeatures.Spinbot = v
+    if RageActive then
+        if v then
+            createAntiAim(RageConfig.RageFeatures.AntiAimMode)
+        else
+            destroyAntiAim()
+        end
+    end
+end})
+rageGroup:AddSlider("RageSpinSpeed",{Text="Spin Speed",Default=25,Min=1,Max=50,Rounding=0,Callback=function(v) RageConfig.RageFeatures.SpinSpeed = v end})
+rageGroup:AddDropdown("RageAntiAimMode",{Text="Anti-Aim Mode",Values={"Off","Spin","Jitter","StaticDown"},Default="Off",Callback=function(v)
+    RageConfig.RageFeatures.AntiAimMode = v
+    if RageActive and RageConfig.RageFeatures.Enabled and RageConfig.RageMasterSwitch then
+        createAntiAim(v)
+    end
+end})
+rageGroup:AddToggle("RageTeleportKill",{Text="Teleport Kill",Default=false,Callback=function(v) RageConfig.RageFeatures.TeleportKill = v end})
+rageGroup:AddKeybind("RageTeleportKey",{Text="Teleport Key",Default="Q",Callback=function(v) RageConfig.RageFeatures.TeleportKey = v end,ChangedCallback=function(v) RageConfig.RageFeatures.TeleportKey = v end})
+
+-- Advanced
+local advLeft = Tabs.Advanced:AddLeftGroupbox("Threat Weights")
+advLeft:AddSlider("WeightVisibility",{Text="Visibility",Default=0.4,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.ThreatWeights.Visibility = v end})
+advLeft:AddSlider("WeightLookAtMe",{Text="Look At Me",Default=0.3,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.ThreatWeights.LookAtMe = v end})
+advLeft:AddSlider("WeightDistance",{Text="Distance",Default=0.2,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.ThreatWeights.Distance = v end})
+advLeft:AddSlider("WeightHealth",{Text="Health",Default=0.1,Min=0,Max=1,Rounding=0.01,Callback=function(v) Config.ThreatWeights.Health = v end})
+local advRight = Tabs.Advanced:AddRightGroupbox("Other")
+advRight:AddSlider("HitChance",{Text="Hit Chance %",Default=100,Min=0,Max=100,Rounding=0,Callback=function(v) Config.Aimbot.HitChance = v end})
+advRight:AddSlider("VelocitySmoothingAdv",{Text="Vel Smoothing",Default=0.7,Min=0.1,Max=0.99,Rounding=0.01,Callback=function(v) Config.Aimbot.VelocitySmoothing = v end})
+advRight:AddSlider("MouseMoveThresholdAdv",{Text="RCS Mouse Ignore",Default=30,Min=0,Max=100,Rounding=0,Callback=function(v) Config.Aimbot.MouseMoveThreshold = v end})
+
+-- Profiles
+local profileGroup=Tabs.Profiles:AddLeftGroupbox("Quick Presets")
+local function safeSet(opt,val) if Options[opt] then Options[opt]:SetValue(val) end end
+profileGroup:AddButton("Competitive",function() LegitConfig.ESP.MaxDistance=300; LegitConfig.ESP.MinDistance=10; LegitConfig.ESP.Skeleton=true; LegitConfig.ESP.ShowTracer=true; LegitConfig.ESP.VisibleCheck=true; LegitConfig.ESP.BoxThickness=2; LegitConfig.ESP.BoxType="2D" safeSet("MaxDistance",300); safeSet("MinDistance",10); safeSet("SkeletonEnabled",true); safeSet("ShowTracer",true); safeSet("VisibleCheck",true); safeSet("BoxThickness",2); safeSet("BoxType","2D") end)
+profileGroup:AddButton("Performance",function() LegitConfig.ESP.MaxDistance=200; LegitConfig.ESP.MinDistance=0; LegitConfig.ESP.Skeleton=false; LegitConfig.ESP.ShowTracer=false; LegitConfig.ESP.VisibleCheck=false; LegitConfig.ESP.BoxThickness=1; LegitConfig.ESP.BoxType="2D"; LegitConfig.ESP.ShowName=false; LegitConfig.ESP.ShowHealth=false; LegitConfig.ESP.ShowDistance=false safeSet("MaxDistance",200); safeSet("MinDistance",0); safeSet("SkeletonEnabled",false); safeSet("ShowTracer",false); safeSet("VisibleCheck",false); safeSet("BoxThickness",1); safeSet("BoxType","2D"); safeSet("ShowName",false); safeSet("ShowHealth",false); safeSet("ShowDistance",false) end)
+profileGroup:AddButton("Max Distance",function() LegitConfig.ESP.MaxDistance=2000; LegitConfig.ESP.MinDistance=0; LegitConfig.ESP.Skeleton=true; LegitConfig.ESP.ShowTracer=true; LegitConfig.ESP.VisibleCheck=true; LegitConfig.ESP.BoxThickness=3 safeSet("MaxDistance",2000); safeSet("MinDistance",0); safeSet("SkeletonEnabled",true); safeSet("ShowTracer",true); safeSet("VisibleCheck",true); safeSet("BoxThickness",3) end)
+
+-- UI Settings
+local uiGroup=Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+uiGroup:AddKeyPicker("MenuKeybind",{Default="RightShift",NoUI=true,Text="Menu keybind"})
+uiGroup:AddButton("Unload",function() unloadHub() end)
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({"MenuKeybind"})
+ThemeManager:SetFolder("glupost_hub")
+SaveManager:SetFolder("glupost_hub/configs")
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+SaveManager:LoadAutoloadConfig()
+Library.ToggleKeybind=Options.MenuKeybind.Value
 
 -- ===== ИНИЦИАЛИЗАЦИЯ И ВЫГРУЗКА =====
 local function initESP()
@@ -1275,4 +1418,4 @@ renderSteppedConn=RunService.RenderStepped:Connect(function(dt)
 end)
 setupHotkeys()
 
-print("glupost hub v16.6.0 loaded (Full, ScreenPoint Sync)")
+print("glupost hub v16.6.0 loaded (Full, GUI, ScreenPoint Sync)")
