@@ -1,4 +1,4 @@
--- glupost hub v16.8.2 (fixed: UIS.InputEnded leak, nil Character in WallCheck)
+-- glupost hub v16.8.3 (полный, с dynamic gravity, auto-fire fix, camera safety)
 
 if getgenv().GlupostHubLoaded then return end
 getgenv().GlupostHubLoaded = true
@@ -24,7 +24,7 @@ local CONST = {
     DYNAMIC_FOV_MOVE_FACTOR = 1.5,
     PREDICTION_MIN_DT = 0.001,
     ANGLE_SAFETY_DEG = 30,
-    GRAVITY = 196.2,
+    DEFAULT_GRAVITY = 196.2,
 }
 
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
@@ -97,6 +97,7 @@ local LegitConfig = {
         SilentMaxAngle = 30,
         RandomBone = false,
         BoneWeights = { Head = 0.15, Torso = 0.60, LowerTorso = 0.25 },
+        GravityFactor = 1.0,
     },
     ThreatWeights = {
         Visibility = 0.4,
@@ -145,6 +146,7 @@ local RageConfig = {
         SilentMaxAngle = 180,
         RandomBone = false,
         BoneWeights = { Head = 0.90, Torso = 0.10 },
+        GravityFactor = 1.0,
     },
     RageFeatures = {
         Enabled = false,
@@ -189,6 +191,7 @@ local rayParams, aimRayParams = RaycastParams.new(), RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 rayParams.FilterDescendantsInstances = { Camera }
 aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
+local visibleCheckExclude = { Camera }
 
 local predictionCache = {}
 local threatScoreCache = {}
@@ -198,7 +201,7 @@ local currentRecoilPattern = nil
 local recoilStep = 0
 local lastShotTick = 0
 local recoilConn = nil
-local inputEndedConn = nil  -- <-- для UIS.InputEnded
+local inputEndedConn = nil
 local lastPredictionUpdate = 0
 local lastFrameTime = os.clock()
 local lastDrawCountUpdate = 0
@@ -207,6 +210,7 @@ local frameDurations = {}
 
 local antiAimGyro = nil
 local autoFireThread = nil
+local autoFireLock = false
 
 -- Шум Перлина
 local perlinSeed = os.clock()
@@ -317,7 +321,27 @@ local function setupPlayer(plr)
 end
 
 local function getBoxColor(plr,visible,priority) if priority then return Config.ESP.PriorityColor end if Config.ESP.VisibleCheck then return visible and Config.ESP.VisibleColor or Config.ESP.OccludedColor else if Config.ESP.HideTeammates and isTeammate(plr) then return Config.ESP.AllyColor else return Config.ESP.EnemyColor end end end
-local function isVisibleCached(data,part) local now=os.clock() if now-data.lastVisibleUpdate<CONST.VISIBLE_UPDATE_INTERVAL then return data.visible end data.lastVisibleUpdate=now if not part then data.visible=false return false end local origin=Camera.CFrame.Position local delta=part.Position-origin local mag=delta.Magnitude if mag<0.001 then data.visible=true return true end local dir=delta/mag if LP.Character then rayParams.FilterDescendantsInstances={LP.Character, Camera} else rayParams.FilterDescendantsInstances={Camera} end local res=workspace:Raycast(origin,dir*mag,rayParams) if not res then data.visible=true return true end data.visible=(res.Position-origin).Magnitude>=mag-0.5 return data.visible end
+local function isVisibleCached(data,part)
+    local now=os.clock()
+    if now-data.lastVisibleUpdate < CONST.VISIBLE_UPDATE_INTERVAL then return data.visible end
+    data.lastVisibleUpdate=now
+    if not part then data.visible=false return false end
+    local origin = Camera.CFrame.Position
+    local delta = part.Position - origin
+    local mag = delta.Magnitude
+    if mag < 0.001 then data.visible=true return true end
+    local dir = delta / mag
+    if LP.Character then
+        table.clear(visibleCheckExclude)
+        table.insert(visibleCheckExclude, Camera)
+        table.insert(visibleCheckExclude, LP.Character)
+    end
+    rayParams.FilterDescendantsInstances = visibleCheckExclude
+    local res = workspace:Raycast(origin, dir * mag, rayParams)
+    if not res then data.visible = true return true end
+    data.visible = (res.Position - origin).Magnitude >= mag - 0.5
+    return data.visible
+end
 
 -- ===== ESP ОТРИСОВКА (WorldToScreenPoint) =====
 local function updateBoxPosition(d, parts, rd)
@@ -545,7 +569,7 @@ local function updateArrowOptimized(d, rd)
     for _, a in pairs(d.arrow) do a.Color = color; a.Visible = true end
 end
 
--- ===== THREAT SCORE & PREDICTION (с гравитацией) =====
+-- ===== THREAT SCORE & PREDICTION (с динамической гравитацией) =====
 local function isVisibleThreat(head)
     if not head then return false end
     local origin = Camera.CFrame.Position
@@ -638,7 +662,8 @@ local function getPredictedPosition(targetPart)
     if dt > 0.2 then return targetPart.Position end
     local t = Config.Aimbot.PredictionFactor
     local base = pred.velocity * t + 0.5 * pred.acceleration * t * t
-    base = base - Vector3.new(0, 0.5 * CONST.GRAVITY * t * t, 0)
+    local gravity = CONST.DEFAULT_GRAVITY * (Config.Aimbot.GravityFactor or 1.0)
+    base = base - Vector3.new(0, 0.5 * gravity * t * t, 0)
     return targetPart.Position + base
 end
 
@@ -710,7 +735,7 @@ local function applyAdaptiveRCS(targetPos)
     return targetPos - compensation
 end
 
--- ===== SILENT AIM (улучшенный) =====
+-- ===== SILENT AIM =====
 local oldNamecall, oldIndex
 local ourSilentHook = {}
 
@@ -849,7 +874,7 @@ local function removeSilentHook()
     ourSilentHook = {}
 end
 
--- ===== СГЛАЖИВАНИЕ (с защитой от овершута) =====
+-- ===== СГЛАЖИВАНИЕ =====
 local function applySmoothing(currentCF, targetCF, targetPart, dt)
     local smoothType = Config.Aimbot.SmoothnessType
     if smoothType == "Instant" then return targetCF end
@@ -915,7 +940,7 @@ local function updateFOV()
     end
 end
 
--- ===== GET BEST TARGET (исправлен nil Character) =====
+-- ===== GET BEST TARGET =====
 local function getBestTarget()
     local bestTarget = nil
     local bestScore = -math.huge
@@ -940,7 +965,6 @@ local function getBestTarget()
         local distPixels = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
         if distPixels > fovRadius then continue end
         if wallCheck then
-            -- ИСПРАВЛЕНИЕ: проверяем, что parts.Character не nil
             if not parts.Character then continue end
             local origin = Camera.CFrame.Position
             local dir = predictedPos - origin
@@ -968,7 +992,7 @@ local function getBestTarget()
     return bestTarget
 end
 
--- ===== KILL AURA (с кэшированием) =====
+-- ===== KILL AURA =====
 local function updateKillAuraCache()
     if not RageActive or not RageConfig.RageFeatures.Enabled or not RageConfig.RageMasterSwitch then
         killAuraTargetsCache = {}
@@ -998,7 +1022,6 @@ local function updateKillAuraCache()
             if Config.Aimbot.TeamCheck and isTeammate(plr) then continue end
             local doWallCheck = Config.Aimbot.WallCheck and not RageConfig.RageFeatures.AutoWall
             if doWallCheck then
-                -- ИСПРАВЛЕНИЕ: проверка parts.Character
                 if not parts.Character then continue end
                 local origin = Camera.CFrame.Position
                 local dir = targetPart.Position - origin
@@ -1019,18 +1042,17 @@ local function getKillAuraTarget()
     return target
 end
 
--- ===== ГЛАВНЫЙ ЦИКЛ (AutoFire с защитой от утечек) =====
+-- ===== ГЛАВНЫЙ ЦИКЛ =====
 local aimActive = false
 local aimKeyPressedTime = 0
 local lastAutoFireShot = 0
 
 local function startAutoFireLoop()
-    if autoFireThread then
-        task.cancel(autoFireThread)
-        autoFireThread = nil
-    end
+    if autoFireLock then return end
+    autoFireLock = true
+    if autoFireThread then task.cancel(autoFireThread) end
     autoFireThread = task.spawn(function()
-        while not isUnloaded and (RageActive and RageConfig.RageFeatures.Enabled and RageConfig.RageMasterSwitch) and (RageConfig.RageFeatures.AutoFire or RageConfig.RageFeatures.RapidFire) do
+        while not isUnloaded and RageActive and RageConfig.RageFeatures.Enabled and RageConfig.RageMasterSwitch and (RageConfig.RageFeatures.AutoFire or RageConfig.RageFeatures.RapidFire) do
             if currentTarget then
                 local baseCooldown = RageConfig.RageFeatures.RapidFire and CONST.RAPID_FIRE_COOLDOWN or CONST.AUTO_FIRE_COOLDOWN
                 local cooldown = baseCooldown * (0.8 + math.random() * 0.4)
@@ -1049,6 +1071,7 @@ local function startAutoFireLoop()
             task.wait(0.001)
         end
         autoFireThread = nil
+        autoFireLock = false
     end)
 end
 
@@ -1057,25 +1080,32 @@ local function stopAutoFireLoop()
         task.cancel(autoFireThread)
         autoFireThread = nil
     end
+    autoFireLock = false
 end
 
 local function updateAimbotLoop(dt)
     if isUnloaded then return end
     if not Config.Aimbot.Enabled then return end
 
-    if currentRecoilPattern then recordRecoilUpdate() end
-    if RageActive then
-        updateAntiAim(dt)
+    local myChar = LP.Character
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myHrp then
+        aimActive = false
+        currentTarget = nil
+        lockedTarget = nil
+        if currentRecoilPattern then currentRecoilPattern = nil end
     end
+
+    if currentRecoilPattern then recordRecoilUpdate() end
+    if RageActive then updateAntiAim(dt) end
 
     local rageActiveNow = RageActive and RageConfig.RageFeatures.Enabled and RageConfig.RageMasterSwitch
 
     -- TeleportKill
-    if rageActiveNow and RageConfig.RageFeatures.TeleportKill then
+    if rageActiveNow and RageConfig.RageFeatures.TeleportKill and myHrp then
         if UIS:IsKeyDown(RageConfig.RageFeatures.TeleportKey) and currentTarget then
             local targetPos = currentTarget.Position
-            local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-            if hrp then hrp.CFrame = CFrame.new(targetPos + (hrp.CFrame.LookVector * -5)) end
+            myHrp.CFrame = CFrame.new(targetPos + (myHrp.CFrame.LookVector * -5))
         end
     end
 
@@ -1088,7 +1118,7 @@ local function updateAimbotLoop(dt)
         elseif key.EnumType == Enum.KeyCode then pressed = UIS:IsKeyDown(key) end
     end
 
-    if pressed then
+    if pressed and myHrp then
         if not aimActive then
             if aimKeyPressedTime == 0 then aimKeyPressedTime = os.clock() end
             if os.clock() - aimKeyPressedTime >= Config.Aimbot.ReactionTime then aimActive = true end
@@ -1098,7 +1128,7 @@ local function updateAimbotLoop(dt)
     end
 
     local newTarget = nil
-    if aimActive or (rageActiveNow and RageConfig.RageFeatures.AutoFire) or (rageActiveNow and RageConfig.RageFeatures.KillAura) then
+    if (aimActive or (rageActiveNow and RageConfig.RageFeatures.AutoFire) or (rageActiveNow and RageConfig.RageFeatures.KillAura)) and myHrp then
         if rageActiveNow and RageConfig.RageFeatures.KillAura then
             newTarget = getKillAuraTarget()
         elseif aimActive then
@@ -1120,14 +1150,14 @@ local function updateAimbotLoop(dt)
     end
     currentTarget = lockedTarget
 
-    -- AutoFire / RapidFire запуск отдельного потока
+    -- управление auto-fire
     if rageActiveNow and (RageConfig.RageFeatures.AutoFire or RageConfig.RageFeatures.RapidFire) then
-        if not autoFireThread then startAutoFireLoop() end
+        if not autoFireThread and not autoFireLock then startAutoFireLoop() end
     else
         stopAutoFireLoop()
     end
 
-    if Config.Aimbot.CameraEnabled and aimActive and currentTarget then
+    if Config.Aimbot.CameraEnabled and aimActive and currentTarget and myHrp then
         local predictedPos = getPredictedPosition(currentTarget)
         local targetPos = predictedPos
         if Config.Aimbot.RCSEnabled and Config.Aimbot.RCSAdaptiveLearning then
@@ -1191,7 +1221,7 @@ local function updateESP()
     if arrow then lastArrowUpdate=now for plr,rd in pairs(renderData) do local d=playersData[plr] if d and rd then updateArrowOptimized(d,rd) end end end
 end
 
--- ===== RAGE (Anti-Aim с защитой от лишних пересозданий) =====
+-- ===== RAGE (Anti-Aim) =====
 local function createAntiAim(mode)
     if mode == "Off" then
         if antiAimGyro then destroyAntiAim() end
@@ -1303,7 +1333,7 @@ local function updateFPSDisplay(dt) if not Config.ESP.ShowFPS then if fpsLabel t
 end
 
 -- ===== GUI =====
-local Window = Library:CreateWindow({Title="glupost hub",Footer="v16.8.2",NotifySide="Right",ShowCustomCursor=true})
+local Window = Library:CreateWindow({Title="glupost hub",Footer="v16.8.3",NotifySide="Right",ShowCustomCursor=true})
 local Tabs = {
     Main=Window:AddTab("Main","user"),
     Visuals=Window:AddTab("Visuals","palette"),
@@ -1346,7 +1376,7 @@ visualRight:AddToggle("ShowName",{Text="Show Name",Default=true,Callback=functio
 visualRight:AddToggle("ShowHealth",{Text="Show Health",Default=true,Callback=function(v) Config.ESP.ShowHealth=v end})
 visualRight:AddToggle("ShowDistance",{Text="Show Distance",Default=true,Callback=function(v) Config.ESP.ShowDistance=v end})
 
--- Aimbot (добавлены Silent Aim настройки)
+-- Aimbot
 local aimLeft=Tabs.Aimbot:AddLeftGroupbox("Aimbot Settings")
 aimLeft:AddToggle("AimbotEnabled",{Text="Enable Aimbot",Default=true,Callback=function(v) Config.Aimbot.Enabled=v end})
 aimLeft:AddToggle("CameraEnabled",{Text="Camera Aimbot",Default=true,Callback=function(v) Config.Aimbot.CameraEnabled=v end})
@@ -1431,6 +1461,7 @@ local advRight = Tabs.Advanced:AddRightGroupbox("Other")
 advRight:AddSlider("HitChance",{Text="Hit Chance %",Default=100,Min=0,Max=100,Rounding=0,Callback=function(v) Config.Aimbot.HitChance = v end})
 advRight:AddSlider("VelocitySmoothingAdv",{Text="Vel Smoothing",Default=0.7,Min=0.1,Max=0.99,Rounding=0.01,Callback=function(v) Config.Aimbot.VelocitySmoothing = v end})
 advRight:AddSlider("MouseMoveThresholdAdv",{Text="RCS Mouse Ignore",Default=30,Min=0,Max=100,Rounding=0,Callback=function(v) Config.Aimbot.MouseMoveThreshold = v end})
+advRight:AddSlider("GravityFactor",{Text="Gravity Factor",Default=1.0,Min=0,Max=3.0,Rounding=0.01,Callback=function(v) Config.Aimbot.GravityFactor = v end})
 
 -- Profiles
 local profileGroup=Tabs.Profiles:AddLeftGroupbox("Quick Presets")
@@ -1504,7 +1535,6 @@ local function setupHotkeys()
     end)
 end
 
--- RCS по клику (и сброс при отпускании)
 recoilConn = UIS.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -1537,4 +1567,4 @@ renderSteppedConn=RunService.RenderStepped:Connect(function(dt)
 end)
 setupHotkeys()
 
-print("glupost hub v16.8.2 loaded (full, leak fixed)")
+print("glupost hub v16.8.3 loaded (full, fixed)")
